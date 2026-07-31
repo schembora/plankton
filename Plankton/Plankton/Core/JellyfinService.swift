@@ -140,12 +140,16 @@ final class JellyfinService {
         ]
         var hlsProfile = TranscodingProfile()
         hlsProfile.protocol = .hls
-        hlsProfile.container = "ts"
+        hlsProfile.container = "fmp4"
         hlsProfile.type = .video
         hlsProfile.videoCodec = "h264"
         hlsProfile.audioCodec = "aac"
         hlsProfile.maxAudioChannels = "2"
+        hlsProfile.enableSubtitlesInManifest = true
         profile.transcodingProfiles = [hlsProfile]
+        profile.subtitleProfiles = [
+            SubtitleProfile(format: "vtt", method: .hls),
+        ]
 
         var body = PlaybackInfoDto()
         body.userID = userID
@@ -160,7 +164,13 @@ final class JellyfinService {
 
         // Transcoded HLS — the URL already carries the play session and API key.
         if let transcodingURL = mediaSource.transcodingURL {
-            return client.url(path: transcodingURL)
+            var url = transcodingURL
+            // Ask the server to list all subtitle tracks in the HLS manifest;
+            // AVPlayer shows them in its native subtitle picker.
+            if let subtitleIndex = Self.manifestSubtitleIndex(for: mediaSource) {
+                url += "&SubtitleMethod=Hls&SubtitleStreamIndex=\(subtitleIndex)"
+            }
+            return client.url(path: url)
         }
 
         // Direct play of a natively supported file.
@@ -177,6 +187,20 @@ final class JellyfinService {
     }
 
     // MARK: - Helpers
+
+    /// Subtitle stream to mark as the manifest default: the server's default choice when
+    /// there is one, otherwise -1 (all tracks listed, none enabled). Nil when the item
+    /// has no subtitle streams at all.
+    private static func manifestSubtitleIndex(for mediaSource: MediaSourceInfo) -> Int? {
+        let subtitleStreams = (mediaSource.mediaStreams ?? []).filter { $0.type == .subtitle }
+        guard !subtitleStreams.isEmpty else { return nil }
+
+        if let defaultIndex = mediaSource.defaultSubtitleStreamIndex,
+           subtitleStreams.contains(where: { $0.index == defaultIndex }) {
+            return defaultIndex
+        }
+        return -1
+    }
 
     /// Accepts anything from `192.168.1.5:8096` to `https://jellyfin.example.com` and
     /// returns a normalized URL. Bare hosts default to HTTP, as is typical for LAN servers.
