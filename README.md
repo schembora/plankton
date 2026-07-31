@@ -7,9 +7,10 @@ A native Jellyfin client for iPhone and iPad, built with SwiftUI. Plankton focus
 - Connect to your Jellyfin server by address or automatic discovery on your local network
 - Browse your movie and TV show libraries with a fluid, Liquid Glass UI
 - Stream with the native player, the server transcodes to HLS when needed
+- Keep watching in Picture in Picture while using other apps
 - Secure sign-in with the session stored in the Keychain
 
-**Coming soon:** offline downloads, Picture in Picture, and subtitles.
+**Coming soon:** offline downloads and subtitles.
 
 ## Requirements
 

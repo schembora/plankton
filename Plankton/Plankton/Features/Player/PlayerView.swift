@@ -58,6 +58,12 @@ struct PlayerView: UIViewControllerRepresentable {
 
         let controller = AVPlayerViewController()
         controller.player = AVPlayer(playerItem: item)
+
+        // Picture in Picture: show the PiP button and start PiP automatically
+        // when the user leaves the app during fullscreen playback.
+        controller.allowsPictureInPicturePlayback = true
+        controller.canStartPictureInPictureAutomaticallyFromInline = true
+
         controller.player?.play()
         return controller
     }
