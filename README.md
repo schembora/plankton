@@ -1,6 +1,6 @@
 # Plankton
 
-A native Jellyfin client for iPhone and iPad, built with SwiftUI. Plankton focuses on a clean, glassy interface that feels right at home on iOS 26, with first-class support for downloading media for offline viewing (in progress).
+A native Jellyfin client for iPhone and iPad, built with SwiftUI. Plankton focuses on a clean, glassy interface that feels right at home on iOS 26, with first-class support for downloading media for offline viewing.
 
 ## Features
 
@@ -9,9 +9,9 @@ A native Jellyfin client for iPhone and iPad, built with SwiftUI. Plankton focus
 - Stream with the native player, the server transcodes to HLS when needed
 - Keep watching in Picture in Picture while using other apps
 - Pick subtitles right in the player's native track menu
+- Download movies and episodes for offline viewing — saved via the same HLS the player negotiates, so anything that streams can be saved
+- Offline mode: when your server can't be reached, land straight on your downloads — they always play from disk, even once you're back online
 - Secure sign-in with the session stored in the Keychain
-
-**Coming soon:** offline downloads.
 
 ## Requirements
 
@@ -40,9 +40,9 @@ xcodebuild -project Plankton/Plankton.xcodeproj -scheme Plankton \
 
 ```
 Plankton/Plankton/
-├── Core/        Jellyfin service, session & Keychain, item helpers
-├── Design/      Reusable UI: poster cards, media shelves, async images
-└── Features/    Connect, Home, Library, Detail, Player, Settings
+├── Core/        Jellyfin service, downloads, session & Keychain, server discovery, item helpers
+├── Design/      Reusable UI: poster tiles & grids, media shelves, async images
+└── Features/    Connect, Home, Library, Detail, Player, Downloads, Settings
 ```
 
 ## Contributing

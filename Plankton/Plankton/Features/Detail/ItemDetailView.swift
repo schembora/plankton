@@ -16,6 +16,7 @@ struct PlaybackItem: Identifiable {
 struct ItemDetailView: View {
 
     @Environment(JellyfinService.self) private var jellyfin
+    @Environment(DownloadService.self) private var downloads
 
     let item: BaseItemDto
 
@@ -42,7 +43,10 @@ struct ItemDetailView: View {
                     titleBlock
 
                     if isPlayable {
-                        playButton
+                        HStack(spacing: 12) {
+                            playButton
+                            DownloadButton(item: displayed, style: .prominent)
+                        }
                     }
 
                     if displayed.type == .series {
@@ -198,6 +202,12 @@ struct ItemDetailView: View {
     // MARK: - Playback & URLs
 
     private func play(_ item: BaseItemDto) {
+        // Prefer the downloaded copy when there is one — instant and offline-capable.
+        if let itemID = item.id, let localURL = downloads.localURL(forItemID: itemID) {
+            playback = PlaybackItem(url: localURL)
+            return
+        }
+
         guard !isPreparingPlayback else { return }
         isPreparingPlayback = true
 
@@ -231,35 +241,22 @@ private struct EpisodeRow: View {
     let episode: BaseItemDto
 
     var body: some View {
-        HStack(spacing: 12) {
+        EpisodeCard(
+            label: episode.episodeLabel,
+            title: episode.name ?? "Episode",
+            runtimeText: episode.runtimeText
+        ) {
             JellyfinImage(url: thumbURL, placeholderIcon: "tv")
-                .frame(width: 140, height: 80)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        } accessory: {
+            HStack(spacing: 12) {
+                DownloadButton(item: episode)
+                    .font(.title3)
 
-            VStack(alignment: .leading, spacing: 4) {
-                if let label = episode.episodeLabel {
-                    Text(label)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Text(episode.name ?? "Episode")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                    .lineLimit(2)
-                if let runtime = episode.runtimeText {
-                    Text(runtime)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Image(systemName: "play.circle")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            Image(systemName: "play.circle")
-                .font(.title3)
-                .foregroundStyle(.secondary)
         }
-        .padding()
-        .glassEffect(.regular, in: .rect(cornerRadius: 16))
     }
 
     private var thumbURL: URL? {

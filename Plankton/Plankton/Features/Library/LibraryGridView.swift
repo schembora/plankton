@@ -11,6 +11,7 @@ import SwiftUI
 struct LibraryGridView: View {
 
     @Environment(JellyfinService.self) private var jellyfin
+    @Environment(DownloadService.self) private var downloads
 
     let library: BaseItemDto
 
@@ -19,7 +20,6 @@ struct LibraryGridView: View {
     @State private var isLoading = false
 
     private let pageSize = 50
-    private let columns = [GridItem(.adaptive(minimum: 110), spacing: 12)]
 
     private var itemTypes: [BaseItemKind]? {
         switch library.collectionType {
@@ -30,24 +30,26 @@ struct LibraryGridView: View {
     }
 
     var body: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 16) {
-                ForEach(items) { item in
-                    NavigationLink {
-                        ItemDetailView(item: item)
-                    } label: {
-                        PosterCard(item: item, width: nil)
+        PosterGrid {
+            ForEach(items) { item in
+                NavigationLink {
+                    ItemDetailView(item: item)
+                } label: {
+                    PosterCard(item: item, width: nil)
+                }
+                .buttonStyle(.plain)
+                .contextMenu {
+                    if item.type == .movie {
+                        downloadAction(for: item)
                     }
-                    .buttonStyle(.plain)
-                    .onAppear {
-                        if item.id == items.last?.id {
-                            Task { await loadNextPage() }
-                        }
+                }
+                .onAppear {
+                    if item.id == items.last?.id {
+                        Task { await loadNextPage() }
                     }
                 }
             }
-            .padding()
-
+        } footer: {
             if isLoading {
                 ProgressView()
                     .padding()
@@ -55,6 +57,29 @@ struct LibraryGridView: View {
         }
         .navigationTitle(library.name ?? "Library")
         .task { await loadNextPage() }
+    }
+
+    /// Long-press action matching the item's download state.
+    @ViewBuilder
+    private func downloadAction(for item: BaseItemDto) -> some View {
+        switch downloads.state(for: item.id) {
+        case .none, .failed:
+            Button("Download", systemImage: "arrow.down") {
+                Task { await downloads.download(item: item) }
+            }
+        case .downloading:
+            Button("Cancel Download", systemImage: "xmark") {
+                if let itemID = item.id {
+                    downloads.cancelDownload(itemID: itemID)
+                }
+            }
+        case .downloaded:
+            Button("Remove Download", systemImage: "trash", role: .destructive) {
+                if let itemID = item.id {
+                    downloads.delete(itemID: itemID)
+                }
+            }
+        }
     }
 
     private func loadNextPage() async {

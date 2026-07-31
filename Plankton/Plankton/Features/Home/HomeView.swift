@@ -24,7 +24,9 @@ struct HomeView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                if isLoading, isEmpty {
+                if jellyfin.isOffline {
+                    OfflineView()
+                } else if isLoading, isEmpty {
                     ProgressView()
                         .padding(.top, 120)
                 } else if loadFailed, isEmpty {
@@ -59,6 +61,12 @@ struct HomeView: View {
             .navigationTitle("Home")
             .refreshable { await load() }
             .task { await load() }
+            // Back online after offline mode — load the shelves.
+            .onChange(of: jellyfin.isOffline) { _, isOffline in
+                if !isOffline, isEmpty {
+                    Task { await load() }
+                }
+            }
         }
     }
 

@@ -28,7 +28,9 @@ struct LibraryView: View {
                 }
             }
             .overlay {
-                if isLoading, libraries.isEmpty {
+                if jellyfin.isOffline {
+                    OfflineView()
+                } else if isLoading, libraries.isEmpty {
                     ProgressView()
                 } else if libraries.isEmpty {
                     ContentUnavailableView {
@@ -41,6 +43,12 @@ struct LibraryView: View {
             .navigationTitle("Library")
             .refreshable { await load() }
             .task { await load() }
+            // Back online after offline mode — load the libraries.
+            .onChange(of: jellyfin.isOffline) { _, isOffline in
+                if !isOffline, libraries.isEmpty {
+                    Task { await load() }
+                }
+            }
         }
     }
 

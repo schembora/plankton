@@ -17,7 +17,7 @@ struct ConnectView: View {
     @State private var errorMessage: String?
     @State private var showSignIn = false
 
-    @State private var discoveredServers: [JellyfinClient.PublicServer] = []
+    @State private var discoveredServers: [DiscoveredServer] = []
     @State private var isDiscovering = false
 
     var body: some View {
@@ -144,7 +144,9 @@ struct ConnectView: View {
             } catch JellyfinService.ConnectError.invalidAddress {
                 errorMessage = "That doesn't look like a valid server address."
             } catch {
-                errorMessage = "Couldn't reach a Jellyfin server at that address."
+                // The server can't be reached — go into offline mode. Downloads
+                // live on the device, and offline mode offers a way back here.
+                jellyfin.enterOfflineMode()
             }
             isConnecting = false
         }
@@ -155,12 +157,8 @@ struct ConnectView: View {
         discoveredServers = []
 
         Task {
-            do {
-                for try await server in JellyfinClient.discover(duration: .seconds(5)) where !discoveredServers.contains(server) {
-                    discoveredServers.append(server)
-                }
-            } catch {
-                // Discovery is best-effort; failures just mean an empty list.
+            for await server in ServerDiscovery.discover() where !discoveredServers.contains(server) {
+                discoveredServers.append(server)
             }
             isDiscovering = false
         }

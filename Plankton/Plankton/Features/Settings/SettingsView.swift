@@ -28,9 +28,17 @@ struct SettingsView: View {
                 }
 
                 Section("Account") {
-                    LabeledContent("Signed in as", value: jellyfin.username ?? "Unknown")
-                    Button("Sign Out", role: .destructive, action: signOut)
-                        .disabled(isSigningOut)
+                    if jellyfin.isSignedIn {
+                        LabeledContent("Signed in as", value: jellyfin.username ?? "Unknown")
+                        Button("Sign Out", role: .destructive, action: signOut)
+                            .disabled(isSigningOut)
+                    } else {
+                        // Offline mode without a session — offer a way back
+                        // to the connect screen.
+                        Button("Change Server Address") {
+                            Task { await jellyfin.leaveOfflineMode() }
+                        }
+                    }
                 }
 
                 Section("About") {
@@ -43,6 +51,7 @@ struct SettingsView: View {
 
     private func signOut() {
         isSigningOut = true
+        // Downloads stay on the device — they're not tied to the account.
         Task {
             await jellyfin.signOut()
             isSigningOut = false

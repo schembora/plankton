@@ -8,6 +8,7 @@
 import Foundation
 import Get
 import JellyfinAPI
+import Network
 import Observation
 import UIKit
 
@@ -33,7 +34,10 @@ final class JellyfinService {
     private(set) var serverName: String?
     private(set) var userID: String?
     private(set) var username: String?
-    private(set) var isRestoringSession = true
+
+    /// True when the server can't be reached but a cached session exists — the
+    /// app stays open in offline mode and downloaded media remains playable.
+    private(set) var isOffline = false
 
     /// The server chosen on the connect screen, before sign-in completes.
     private(set) var pendingServerURL: URL?
@@ -49,10 +53,20 @@ final class JellyfinService {
         static let deviceID = "deviceID"
         static let serverURL = "serverURL"
         static let serverName = "serverName"
+        static let userID = "userID"
+        static let username = "username"
     }
 
     init() {
-        Task { await restoreSession() }
+        // Restore the cached session synchronously: the app opens straight into
+        // the library (or the downloads, when the server is unreachable) without
+        // waiting on the network. The token is validated in the background.
+        restoreCachedSession()
+        startMonitoringConnectivity()
+
+        if isSignedIn {
+            Task { await validateSession() }
+        }
     }
 
     // MARK: - Connect & sign in
@@ -65,7 +79,8 @@ final class JellyfinService {
             throw ConnectError.invalidAddress
         }
 
-        let info = try await makeClient(url: url).send(Paths.getPublicSystemInfo).value
+        let info = try await makeClient(url: url, requestTimeout: Self.connectTimeout)
+            .send(Paths.getPublicSystemInfo).value
         pendingServerURL = url
         pendingServerName = info.serverName
         return info
@@ -80,6 +95,8 @@ final class JellyfinService {
         keychain.set(client.accessToken, forKey: Keys.accessToken)
         defaults.set(serverURL.absoluteString, forKey: Keys.serverURL)
         defaults.set(pendingServerName, forKey: Keys.serverName)
+        defaults.set(result.user?.id, forKey: Keys.userID)
+        defaults.set(result.user?.name, forKey: Keys.username)
 
         self.client = client
         self.serverURL = serverURL
@@ -89,21 +106,29 @@ final class JellyfinService {
     }
 
     func signOut() async {
-        if let client {
-            try? await client.signOut()
-        }
+        let client = self.client
 
+        // Clear local state first — signing out while offline shouldn't wait
+        // on a server that can't be reached.
         keychain.set(nil, forKey: Keys.accessToken)
         defaults.removeObject(forKey: Keys.serverURL)
         defaults.removeObject(forKey: Keys.serverName)
+        defaults.removeObject(forKey: Keys.userID)
+        defaults.removeObject(forKey: Keys.username)
 
-        client = nil
+        self.client = nil
         serverURL = nil
         serverName = nil
         userID = nil
         username = nil
+        isOffline = false
         pendingServerURL = nil
         pendingServerName = nil
+
+        // Best-effort server-side session cleanup.
+        if let client {
+            try? await client.signOut()
+        }
     }
 
     // MARK: - Requests & URLs
@@ -202,6 +227,20 @@ final class JellyfinService {
         return -1
     }
 
+    /// True for connectivity failures (offline, server unreachable, timeouts) as
+    /// opposed to server rejections such as an expired access token.
+    nonisolated static func isNetworkError(_ error: Error) -> Bool {
+        (error as NSError).domain == NSURLErrorDomain
+    }
+
+    /// True only when the server definitively rejected the access token (401/403).
+    /// Anything else — unreachable host, timeout, 5xx from a proxy — is treated
+    /// as a connectivity problem and keeps the session in offline mode.
+    nonisolated static func isAuthFailure(_ error: Error) -> Bool {
+        guard case APIError.unacceptableStatusCode(let statusCode) = error else { return false }
+        return statusCode == 401 || statusCode == 403
+    }
+
     /// Accepts anything from `192.168.1.5:8096` to `https://jellyfin.example.com` and
     /// returns a normalized URL. Bare hosts default to HTTP, as is typical for LAN servers.
     nonisolated static func normalizedURL(from address: String) -> URL? {
@@ -219,6 +258,11 @@ final class JellyfinService {
         return url
     }
 
+    /// Timeout for reachability checks. Validating the server — on launch or from
+    /// the connect screen — should fail fast when it can't be reached and drop
+    /// into offline mode, not hang on the system's minute-long defaults.
+    private static let connectTimeout: TimeInterval = 3
+
     private var deviceID: String {
         if let existing = keychain.string(forKey: Keys.deviceID) {
             return existing
@@ -228,7 +272,7 @@ final class JellyfinService {
         return new
     }
 
-    private func makeClient(url: URL, accessToken: String? = nil) -> JellyfinClient {
+    private func makeClient(url: URL, accessToken: String? = nil, requestTimeout: TimeInterval? = nil) -> JellyfinClient {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
         let configuration = JellyfinClient.Configuration(
             url: url,
@@ -238,28 +282,93 @@ final class JellyfinService {
             deviceID: deviceID,
             version: version
         )
-        return JellyfinClient(configuration: configuration)
+
+        guard let requestTimeout else {
+            return JellyfinClient(configuration: configuration)
+        }
+
+        let sessionConfiguration = URLSessionConfiguration.default
+        sessionConfiguration.timeoutIntervalForRequest = requestTimeout
+        return JellyfinClient(configuration: configuration, sessionConfiguration: sessionConfiguration)
     }
 
-    private func restoreSession() async {
-        defer { isRestoringSession = false }
-
+    /// Restores the saved session from the Keychain and defaults without touching
+    /// the network, so returning users never wait on a "Connecting…" screen.
+    private func restoreCachedSession() {
         guard let urlString = defaults.string(forKey: Keys.serverURL),
               let url = URL(string: urlString),
               let token = keychain.string(forKey: Keys.accessToken)
         else { return }
 
-        let client = makeClient(url: url, accessToken: token)
+        client = makeClient(url: url, accessToken: token)
+        serverURL = url
+        serverName = defaults.string(forKey: Keys.serverName)
+        userID = defaults.string(forKey: Keys.userID)
+        username = defaults.string(forKey: Keys.username)
+    }
+
+    /// Checks the saved token against the server. A rejection (e.g. expired token)
+    /// signs the user out; a connectivity failure keeps the session and marks the
+    /// app offline, leaving downloaded media available.
+    private func validateSession() async {
+        guard let url = serverURL, let token = keychain.string(forKey: Keys.accessToken) else { return }
+
+        let validationClient = makeClient(url: url, accessToken: token, requestTimeout: Self.connectTimeout)
 
         do {
-            let user = try await client.send(Paths.getCurrentUser).value
-            self.client = client
-            serverURL = url
-            serverName = defaults.string(forKey: Keys.serverName)
+            let user = try await validationClient.send(Paths.getCurrentUser).value
             userID = user.id
             username = user.name
+            defaults.set(user.id, forKey: Keys.userID)
+            defaults.set(user.name, forKey: Keys.username)
+            isOffline = false
         } catch {
-            keychain.set(nil, forKey: Keys.accessToken)
+            if Self.isAuthFailure(error) {
+                // The token was rejected — back to the connect screen.
+                await signOut()
+            } else {
+                // No connection, server down, server error — offline mode.
+                isOffline = true
+            }
         }
+    }
+
+    // MARK: - Offline mode
+
+    /// Enters offline mode without a session — e.g. the connect screen couldn't
+    /// reach a server. Downloads stay browsable since they live on the device.
+    func enterOfflineMode() {
+        isOffline = true
+    }
+
+    /// Leaves offline mode. With a session this signs out so the user can enter
+    /// a new server address; without one it just returns to the connect screen.
+    func leaveOfflineMode() async {
+        if isSignedIn {
+            await signOut()
+        } else {
+            isOffline = false
+        }
+    }
+
+    // MARK: - Connectivity
+
+    private let pathMonitor = NWPathMonitor()
+
+    /// Revalidates the session when connectivity returns while offline, so
+    /// browsing resumes without relaunching the app.
+    private func startMonitoringConnectivity() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            guard path.status == .satisfied else { return }
+            Task { await self?.revalidateIfOffline() }
+        }
+        pathMonitor.start(queue: .main)
+    }
+
+    private func revalidateIfOffline() async {
+        // Only a real session can revalidate; session-less offline mode (from
+        // the connect screen) is left to the user to back out of.
+        guard isOffline, isSignedIn else { return }
+        await validateSession()
     }
 }
