@@ -74,9 +74,7 @@ struct DownloadButton: View {
             Label("Download", systemImage: "arrow.down")
                 .labelStyle(.iconOnly)
         case .downloading(let progress):
-            ProgressView(value: progress)
-                .progressViewStyle(.circular)
-                .controlSize(.small)
+            DownloadProgressRing(progress: progress)
         case .downloaded:
             Label("Downloaded", systemImage: "checkmark")
                 .labelStyle(.iconOnly)
@@ -101,5 +99,28 @@ struct DownloadButton: View {
         case .downloaded:
             showRemoveConfirmation = true
         }
+    }
+}
+
+/// Compact circular progress indicator with the percentage centered inside —
+/// for spots too tight for a labeled progress bar, e.g. the download button
+/// next to Play.
+private struct DownloadProgressRing: View {
+
+    let progress: Double
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(.tertiary, lineWidth: 2)
+            Circle()
+                .trim(from: 0, to: max(progress, 0.02))
+                .stroke(.primary, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            Text("\(Int((progress * 100).rounded()))")
+                .font(.system(size: 9, weight: .bold))
+                .monospacedDigit()
+        }
+        .frame(width: 22, height: 22)
     }
 }

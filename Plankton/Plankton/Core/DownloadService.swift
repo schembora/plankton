@@ -82,10 +82,16 @@ final class DownloadService: NSObject {
     /// Live progress (0...1) for active downloads, keyed by item ID.
     private(set) var progress: [String: Double] = [:]
 
+    /// Smoothed transfer rate in bytes/sec for active downloads, keyed by item ID.
+    private(set) var speeds: [String: Double] = [:]
+
     /// Item IDs whose most recent attempt failed, until retried or relaunched.
     private var failures: Set<String> = []
 
     private var activeTasks: [String: AVAssetDownloadTask] = [:]
+
+    /// Last (bytes received, timestamp) sample per item, used to derive `speeds`.
+    private var byteSamples: [String: (bytes: Int64, date: Date)] = [:]
 
     /// Created in `init` (the delegate is `self`); never changes afterwards.
     @ObservationIgnored private var session: AVAssetDownloadURLSession!
@@ -133,6 +139,15 @@ final class DownloadService: NSObject {
 
     func hasFailed(_ itemID: String) -> Bool {
         failures.contains(itemID)
+    }
+
+    /// Human-readable transfer rate for an active download, e.g. "4.2 MB/s".
+    /// Nil until enough samples have arrived to estimate a rate, or once the
+    /// download isn't actively transferring.
+    func speedText(for itemID: String?) -> String? {
+        guard let itemID, let bytesPerSecond = speeds[itemID], bytesPerSecond >= 1 else { return nil }
+        let formatted = ByteCountFormatter.string(fromByteCount: Int64(bytesPerSecond), countStyle: .file)
+        return "\(formatted)/s"
     }
 
     // MARK: - Downloading
@@ -234,6 +249,7 @@ final class DownloadService: NSObject {
 
         media.removeAll { $0.itemID == itemID }
         progress[itemID] = nil
+        clearSpeedTracking(itemID: itemID)
         failures.remove(itemID)
         removeArtwork(itemID: itemID)
 
@@ -331,10 +347,16 @@ final class DownloadService: NSObject {
     private func purge(itemID: String) {
         activeTasks[itemID] = nil
         progress[itemID] = nil
+        clearSpeedTracking(itemID: itemID)
         failures.remove(itemID)
         media.removeAll { $0.itemID == itemID && $0.status == .downloading }
         removeArtwork(itemID: itemID)
         saveRecords()
+    }
+
+    private func clearSpeedTracking(itemID: String) {
+        speeds[itemID] = nil
+        byteSamples[itemID] = nil
     }
 
     private func removeArtwork(itemID: String) {
@@ -407,11 +429,34 @@ extension DownloadService: AVAssetDownloadDelegate {
         timeRangeExpectedToLoad: CMTimeRange
     ) {
         guard let itemID = assetDownloadTask.taskDescription else { return }
+        updateSpeed(itemID: itemID, bytesReceived: assetDownloadTask.countOfBytesReceived)
+
         let expected = timeRangeExpectedToLoad.duration.seconds
         guard expected > 0 else { return }
 
         let loaded = loadedTimeRanges.reduce(0.0) { $0 + $1.timeRangeValue.duration.seconds }
         progress[itemID] = min(max(loaded / expected, 0), 1)
+    }
+
+    /// Derives a smoothed bytes/sec rate from successive byte-count samples.
+    /// AVAssetDownloadTask reports progress via loaded time ranges, not bytes,
+    /// so speed is tracked separately from `progress` using the task's own
+    /// (inherited from URLSessionTask) byte counters. Samples are throttled to
+    /// half-second windows and blended with an exponential moving average so
+    /// the displayed rate doesn't jitter between consecutive callbacks.
+    private func updateSpeed(itemID: String, bytesReceived: Int64) {
+        let now = Date()
+        guard let previous = byteSamples[itemID] else {
+            byteSamples[itemID] = (bytesReceived, now)
+            return
+        }
+
+        let elapsed = now.timeIntervalSince(previous.date)
+        guard elapsed >= 0.5, bytesReceived >= previous.bytes else { return }
+        byteSamples[itemID] = (bytesReceived, now)
+
+        let instantaneous = Double(bytesReceived - previous.bytes) / elapsed
+        speeds[itemID] = speeds[itemID].map { $0 * 0.7 + instantaneous * 0.3 } ?? instantaneous
     }
 
     func urlSession(
@@ -427,6 +472,7 @@ extension DownloadService: AVAssetDownloadDelegate {
         media[index].fileBookmark = try? location.bookmarkData()
         media[index].fileSize = try? FileManager.default.allocatedSizeOfDirectory(at: location)
         progress[itemID] = nil
+        clearSpeedTracking(itemID: itemID)
         saveRecords()
     }
 
@@ -434,6 +480,7 @@ extension DownloadService: AVAssetDownloadDelegate {
         guard let itemID = task.taskDescription else { return }
         activeTasks[itemID] = nil
         progress[itemID] = nil
+        clearSpeedTracking(itemID: itemID)
 
         guard let error else { return } // Success is handled in didFinishDownloadingTo.
 

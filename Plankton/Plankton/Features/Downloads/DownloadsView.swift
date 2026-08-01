@@ -34,6 +34,17 @@ struct DownloadsView: View {
         }
     }
 
+    /// Individual items (episodes and movies alike) actively transferring,
+    /// newest first — shown as detailed rows above the completed grid.
+    private var downloadingItems: [DownloadedMedia] {
+        downloads.media
+            .filter { media in
+                guard case .downloading = downloads.state(for: media.itemID) else { return false }
+                return true
+            }
+            .sorted { $0.startedAt > $1.startedAt }
+    }
+
     private var entries: [Entry] {
         var movies: [Entry] = []
         var series: [String: (name: String, items: [DownloadedMedia])] = [:]
@@ -53,6 +64,21 @@ struct DownloadsView: View {
     var body: some View {
         NavigationStack {
             PosterGrid {
+                if !downloadingItems.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Downloading")
+                            .font(.headline)
+
+                        VStack(spacing: 12) {
+                            ForEach(downloadingItems) { media in
+                                DownloadProgressRow(media: media)
+                            }
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.top)
+                }
+            } content: {
                 ForEach(entries) { entry in
                     switch entry {
                     case .movie(let media):
