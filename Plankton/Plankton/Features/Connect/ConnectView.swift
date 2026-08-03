@@ -121,6 +121,7 @@ struct ConnectView: View {
                     }
                     .padding()
                     .glassEffect(.regular, in: .rect(cornerRadius: 16))
+                    .contentShape(.rect(cornerRadius: 16))
                 }
                 .buttonStyle(.plain)
             }
