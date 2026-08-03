@@ -91,7 +91,43 @@ final class JellyfinService {
 
         let client = makeClient(url: serverURL)
         let result = try await client.signIn(username: username, password: password)
+        adoptSession(client: client, serverURL: serverURL, result: result)
+    }
 
+    /// Whether the pending server has Quick Connect turned on, so the sign-in
+    /// screen only offers it when it can work. The endpoint returns a bare JSON
+    /// bool, which the SDK surfaces as raw `Data`.
+    func isQuickConnectEnabled() async -> Bool {
+        guard let serverURL = pendingServerURL else { return false }
+
+        let client = makeClient(url: serverURL, requestTimeout: Self.connectTimeout)
+        guard let data = try? await client.send(Paths.getQuickConnectEnabled).value else { return false }
+        return (try? JSONDecoder().decode(Bool.self, from: data)) == true
+    }
+
+    /// Runs the Quick Connect flow against the pending server: yields the
+    /// user-facing code as soon as the server issues it, then polls until the
+    /// code is approved from another signed-in Jellyfin session and completes
+    /// sign-in. Cancelling the surrounding task stops the polling; the flow
+    /// then returns without a session.
+    func signInWithQuickConnect(onCode: (String) -> Void) async throws {
+        guard let serverURL = pendingServerURL else { throw ConnectError.noServerSelected }
+
+        let client = makeClient(url: serverURL)
+        for try await event in client.quickConnect.connect() {
+            switch event {
+            case .polling(let code):
+                onCode(code)
+            case .authenticated(let secret):
+                let result = try await client.signIn(quickConnectSecret: secret)
+                adoptSession(client: client, serverURL: serverURL, result: result)
+                return
+            }
+        }
+    }
+
+    /// Persists and adopts a freshly authenticated session, flipping `isSignedIn`.
+    private func adoptSession(client: JellyfinClient, serverURL: URL, result: AuthenticationResult) {
         keychain.set(client.accessToken, forKey: Keys.accessToken)
         defaults.set(serverURL.absoluteString, forKey: Keys.serverURL)
         defaults.set(pendingServerName, forKey: Keys.serverName)
@@ -100,9 +136,9 @@ final class JellyfinService {
 
         self.client = client
         self.serverURL = serverURL
-        self.serverName = pendingServerName
+        serverName = pendingServerName
         userID = result.user?.id
-        self.username = result.user?.name
+        username = result.user?.name
     }
 
     func signOut() async {

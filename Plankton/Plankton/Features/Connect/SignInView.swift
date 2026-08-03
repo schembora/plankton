@@ -2,7 +2,7 @@
 //  SignInView.swift
 //  Plankton
 //
-//  Username/password sign-in against the pending server.
+//  Username/password sign-in against the pending server, plus Quick Connect when available.
 //
 
 import SwiftUI
@@ -15,6 +15,8 @@ struct SignInView: View {
     @State private var password = ""
     @State private var isSigningIn = false
     @State private var errorMessage: String?
+    @State private var isQuickConnectAvailable = false
+    @State private var showQuickConnect = false
     @FocusState private var focusedField: Field?
 
     private enum Field {
@@ -69,6 +71,14 @@ struct SignInView: View {
                     .controlSize(.large)
                     .disabled(username.isEmpty || isSigningIn)
 
+                    if isQuickConnectAvailable {
+                        Button("Use Quick Connect") {
+                            showQuickConnect = true
+                        }
+                        .buttonStyle(.glass)
+                        .controlSize(.large)
+                    }
+
                     if let errorMessage {
                         Text(errorMessage)
                             .font(.footnote)
@@ -82,6 +92,10 @@ struct SignInView: View {
         }
         .navigationTitle("Sign In")
         .onAppear { focusedField = .username }
+        .task { isQuickConnectAvailable = await jellyfin.isQuickConnectEnabled() }
+        .sheet(isPresented: $showQuickConnect) {
+            QuickConnectView()
+        }
     }
 
     private func signIn() {
