@@ -29,7 +29,7 @@ struct DownloadCard: View {
         .onTapGesture(perform: play)
         .downloadActions(for: media)
         .fullScreenCover(item: $playback) { playback in
-            PlayerContainerView(url: playback.url)
+            PlayerContainerView(playback: playback)
         }
     }
 
@@ -41,7 +41,9 @@ struct DownloadCard: View {
 
     private func play() {
         guard let url = downloads.localURL(forItemID: media.itemID) else { return }
-        playback = PlaybackItem(url: url)
+        // Downloads have no cached watch position, but reporting still
+        // works whenever the server is reachable.
+        playback = PlaybackItem(url: url, itemID: media.itemID)
     }
 }
 

@@ -13,6 +13,7 @@ struct EpisodeCard<Thumb: View, Accessory: View>: View {
     let label: String?
     let title: String
     let runtimeText: String?
+    let watchedProgress: Double?
     let thumb: Thumb
     let accessory: Accessory
 
@@ -20,12 +21,14 @@ struct EpisodeCard<Thumb: View, Accessory: View>: View {
         label: String?,
         title: String,
         runtimeText: String?,
+        watchedProgress: Double? = nil,
         @ViewBuilder thumb: () -> Thumb,
         @ViewBuilder accessory: () -> Accessory
     ) {
         self.label = label
         self.title = title
         self.runtimeText = runtimeText
+        self.watchedProgress = watchedProgress
         self.thumb = thumb()
         self.accessory = accessory()
     }
@@ -34,6 +37,11 @@ struct EpisodeCard<Thumb: View, Accessory: View>: View {
         HStack(spacing: 12) {
             thumb
                 .frame(width: 140, height: 80)
+                .overlay(alignment: .bottom) {
+                    if let watchedProgress {
+                        WatchedProgressBar(progress: watchedProgress)
+                    }
+                }
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             VStack(alignment: .leading, spacing: 4) {

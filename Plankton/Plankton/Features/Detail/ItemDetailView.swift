@@ -11,6 +11,13 @@ import SwiftUI
 struct PlaybackItem: Identifiable {
     let id = UUID()
     let url: URL
+
+    /// Server item being played, for resume and progress reporting. Nil for
+    /// local playback with no session to report against.
+    var itemID: String?
+
+    /// Where to resume from, in Jellyfin ticks.
+    var startTicks: Int?
 }
 
 struct ItemDetailView: View {
@@ -20,6 +27,9 @@ struct ItemDetailView: View {
 
     let item: BaseItemDto
 
+    /// Episode surfaced for resume when Continue Watching sent us here.
+    var resumeEpisode: BaseItemDto?
+
     @State private var fullItem: BaseItemDto?
     @State private var seasons: [BaseItemDto] = []
     @State private var selectedSeasonID: String?
@@ -27,6 +37,7 @@ struct ItemDetailView: View {
     @State private var playback: PlaybackItem?
     @State private var isPreparingPlayback = false
     @State private var playbackError: String?
+    @State private var showDownloadScope = false
 
     private var displayed: BaseItemDto { fullItem ?? item }
 
@@ -34,28 +45,38 @@ struct ItemDetailView: View {
         displayed.type == .movie || displayed.type == .episode
     }
 
+    private var isSeries: Bool { displayed.type == .series }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 hero
 
                 VStack(alignment: .leading, spacing: 20) {
-                    titleBlock
+                    // A series states its identity over the backdrop, so the
+                    // resume control can lead instead of a poster.
+                    if isSeries {
+                        resumeRow
+                    } else {
+                        titleBlock
 
-                    if isPlayable {
-                        HStack(spacing: 12) {
-                            playButton
-                            DownloadButton(item: displayed, style: .prominent)
+                        if isPlayable {
+                            HStack(spacing: 12) {
+                                playButton
+                                DownloadButton(item: displayed, style: .prominent)
+                            }
                         }
                     }
 
-                    if displayed.type == .series {
-                        seriesSection
-                    }
-
+                    // Before the season list: on a series the episode rows are
+                    // long enough to push the description off-screen entirely.
                     if let overview = displayed.overview, !overview.isEmpty {
                         Text(overview)
                             .foregroundStyle(.secondary)
+                    }
+
+                    if isSeries {
+                        seriesSection
                     }
                 }
                 .padding(.horizontal)
@@ -69,7 +90,17 @@ struct ItemDetailView: View {
             Task { await loadEpisodes() }
         }
         .fullScreenCover(item: $playback) { playback in
-            PlayerContainerView(url: playback.url)
+            PlayerContainerView(playback: playback)
+        }
+        .sheet(isPresented: $showDownloadScope) {
+            if let seriesID = displayed.id {
+                DownloadScopeSheet(
+                    seriesID: seriesID,
+                    seasonNumber: selectedSeasonNumber,
+                    seasonEpisodes: episodes
+                )
+                .presentationDetents([.medium, .large])
+            }
         }
         .alert("Couldn't Play Video", isPresented: .init(
             get: { playbackError != nil },
@@ -90,11 +121,94 @@ struct ItemDetailView: View {
             .clipped()
             .overlay(alignment: .bottom) {
                 LinearGradient(
-                    colors: [.clear, .black.opacity(0.4)],
+                    colors: [.clear, .black.opacity(0.55)],
                     startPoint: .center,
                     endPoint: .bottom
                 )
             }
+            .overlay(alignment: .bottomLeading) {
+                if isSeries {
+                    seriesHeroTitle
+                }
+            }
+    }
+
+    private var seriesHeroTitle: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(displayed.displayTitle)
+                .font(.title)
+                .fontWeight(.bold)
+
+            HStack(spacing: 8) {
+                if let year = displayed.productionYear {
+                    Text(String(year))
+                }
+                if !seasons.isEmpty {
+                    Text("\(seasons.count) \(seasons.count == 1 ? "season" : "seasons")")
+                }
+                if let rating = displayed.officialRating {
+                    Text(rating)
+                }
+                if let genre = displayed.genres?.first {
+                    Text(genre)
+                }
+            }
+            .font(.subheadline)
+        }
+        .foregroundStyle(.white)
+        .shadow(radius: 6)
+        .padding(16)
+    }
+
+    /// Resume banner plus a control to take the season offline.
+    private var resumeRow: some View {
+        HStack(spacing: 12) {
+            Button {
+                if let target = resumeTarget { play(target) }
+            } label: {
+                HStack(spacing: 8) {
+                    if isPreparingPlayback {
+                        ProgressView()
+                    }
+                    Label(resumeLabel, systemImage: "play.fill")
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.glassProminent)
+            .controlSize(.large)
+            .disabled(isPreparingPlayback || resumeTarget == nil)
+
+            Button {
+                showDownloadScope = true
+            } label: {
+                Label("Download", systemImage: "arrow.down")
+                    .labelStyle(.iconOnly)
+            }
+            .buttonStyle(.glass)
+            .controlSize(.large)
+            .disabled(episodes.isEmpty)
+        }
+    }
+
+    /// "Resume S2 E4 · 18m left", or a plain play when nothing is part-watched.
+    private var resumeLabel: String {
+        guard let target = resumeTarget else { return "Play" }
+        let verb = target.resumePositionTicks == nil ? "Play" : "Resume"
+        let parts = [target.episodeLabel, target.remainingText].compactMap { $0 }
+        return parts.isEmpty ? verb : "\(verb) \(parts.joined(separator: " · "))"
+    }
+
+    /// The episode Continue Watching sent us to, otherwise the first one still
+    /// part-watched, otherwise the first unwatched, otherwise the first.
+    private var resumeTarget: BaseItemDto? {
+        if let resumeEpisode { return resumeEpisode }
+        if let partWatched = episodes.first(where: { $0.resumePositionTicks != nil }) {
+            return partWatched
+        }
+        if let unwatched = episodes.first(where: { $0.userData?.isPlayed != true }) {
+            return unwatched
+        }
+        return episodes.first
     }
 
     private var titleBlock: some View {
@@ -148,14 +262,13 @@ struct ItemDetailView: View {
     }
 
     private var seriesSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 14) {
             if seasons.count > 1 {
-                Picker("Season", selection: $selectedSeasonID) {
-                    ForEach(seasons) { season in
-                        Text(season.name ?? "Season").tag(season.id)
-                    }
-                }
-                .pickerStyle(.menu)
+                seasonChips
+            }
+
+            if !episodes.isEmpty {
+                seasonDownloadRow
             }
 
             ForEach(episodes) { episode in
@@ -169,6 +282,84 @@ struct ItemDetailView: View {
         }
     }
 
+    /// Seasons as a scrolling segmented row rather than a menu, so switching
+    /// between them is one tap.
+    private var seasonChips: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                ForEach(seasons) { season in
+                    let isSelected = season.id == selectedSeasonID
+                    Button {
+                        selectedSeasonID = season.id
+                    } label: {
+                        Text(season.indexNumber.map { "S\($0)" } ?? (season.name ?? "Season"))
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundStyle(isSelected ? .white : .primary)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background {
+                                if isSelected {
+                                    Capsule().fill(Color.accentColor)
+                                } else {
+                                    Capsule().strokeBorder(.tertiary, lineWidth: 1)
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    /// States what taking this season offline actually costs before opening
+    /// the scope sheet.
+    private var seasonDownloadRow: some View {
+        Button {
+            showDownloadScope = true
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.down.to.line")
+                    .font(.subheadline)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(selectedSeasonNumber.map { "Download season \($0)" } ?? "Download season")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+
+                    Text(seasonDownloadDetail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(14)
+            .glassEffect(.regular, in: .rect(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// "3 of 8 already on this device", or that everything is saved.
+    private var seasonDownloadDetail: String {
+        let saved = episodes.filter { downloads.state(for: $0.id) == .downloaded }.count
+        if saved == episodes.count {
+            return "All \(episodes.count) on this device"
+        }
+        return "\(saved) of \(episodes.count) already on this device"
+    }
+
+    private var selectedSeasonNumber: Int? {
+        seasons.first { $0.id == selectedSeasonID }?.indexNumber
+            ?? episodes.first?.parentIndexNumber
+    }
+
     // MARK: - Loading
 
     private func load() async {
@@ -180,8 +371,12 @@ struct ItemDetailView: View {
         if displayed.type == .series {
             if let result = try? await jellyfin.send(Paths.getSeasons(seriesID: itemID)) {
                 seasons = result.items ?? []
-                // Triggers `onChange`, which loads the episodes.
-                selectedSeasonID = seasons.first?.id
+                // Open on the season holding the episode we were sent to
+                // resume, otherwise the first. Triggers `onChange`, which
+                // loads the episodes.
+                let resumeSeason = resumeEpisode?.parentIndexNumber
+                selectedSeasonID = seasons.first { $0.indexNumber == resumeSeason }?.id
+                    ?? seasons.first?.id
             }
         }
     }
@@ -193,6 +388,8 @@ struct ItemDetailView: View {
         parameters.userID = userID
         parameters.parentID = seasonID
         parameters.limit = 200
+        // Carries playbackPositionTicks, so playing an episode resumes.
+        parameters.enableUserData = true
 
         if let result = try? await jellyfin.send(Paths.getItems(parameters: parameters)) {
             episodes = result.items ?? []
@@ -204,7 +401,11 @@ struct ItemDetailView: View {
     private func play(_ item: BaseItemDto) {
         // Prefer the downloaded copy when there is one — instant and offline-capable.
         if let itemID = item.id, let localURL = downloads.localURL(forItemID: itemID) {
-            playback = PlaybackItem(url: localURL)
+            playback = PlaybackItem(
+                url: localURL,
+                itemID: itemID,
+                startTicks: item.resumePositionTicks
+            )
             return
         }
 
@@ -216,7 +417,11 @@ struct ItemDetailView: View {
             isPreparingPlayback = false
 
             if let url {
-                playback = PlaybackItem(url: url)
+                playback = PlaybackItem(
+                    url: url,
+                    itemID: item.id,
+                    startTicks: item.resumePositionTicks
+                )
             } else {
                 playbackError = "This video isn't playable. The server may not support transcoding for it."
             }
@@ -244,7 +449,8 @@ private struct EpisodeRow: View {
         EpisodeCard(
             label: episode.episodeLabel,
             title: episode.name ?? "Episode",
-            runtimeText: episode.runtimeText
+            runtimeText: episode.runtimeText,
+            watchedProgress: episode.watchedProgress
         ) {
             JellyfinImage(url: thumbURL, placeholderIcon: "tv")
         } accessory: {

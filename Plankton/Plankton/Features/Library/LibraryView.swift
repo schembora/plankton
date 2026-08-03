@@ -379,6 +379,8 @@ struct LibraryView: View {
         parameters.sortOrder = [isAscending ? .ascending : .descending]
         parameters.startIndex = startIndex
         parameters.limit = pageSize
+        // Drives the watched-progress bar on each poster.
+        parameters.enableUserData = true
         if let genre {
             parameters.genres = [genre]
         }

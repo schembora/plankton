@@ -121,6 +121,7 @@ final class DownloadService: NSObject {
 
         try? FileManager.default.createDirectory(at: postersDirectory, withIntermediateDirectories: true)
         media = Self.loadRecords(from: recordsURL)
+        backfillMissingSizes()
         reconcileWithSystem()
     }
 
@@ -146,8 +147,68 @@ final class DownloadService: NSObject {
     /// download isn't actively transferring.
     func speedText(for itemID: String?) -> String? {
         guard let itemID, let bytesPerSecond = speeds[itemID], bytesPerSecond >= 1 else { return nil }
-        let formatted = ByteCountFormatter.string(fromByteCount: Int64(bytesPerSecond), countStyle: .file)
-        return "\(formatted)/s"
+        return "\(Self.sizeText(Int64(bytesPerSecond)))/s"
+    }
+
+    /// Everything currently transferring, newest first — the transfer strip's
+    /// contents.
+    var activeDownloads: [DownloadedMedia] {
+        media
+            .filter { $0.status == .downloading }
+            .sorted { $0.startedAt > $1.startedAt }
+    }
+
+    /// Combined progress across active transfers, 0...1.
+    var combinedProgress: Double {
+        let active = activeDownloads
+        guard !active.isEmpty else { return 0 }
+        let total = active.reduce(0.0) { $0 + (progress[$1.itemID] ?? 0) }
+        return total / Double(active.count)
+    }
+
+    /// Combined transfer rate across active downloads, e.g. "6.1 MB/s".
+    var combinedSpeedText: String? {
+        let total = activeDownloads.compactMap { speeds[$0.itemID] }.reduce(0, +)
+        guard total >= 1 else { return nil }
+        return "\(Self.sizeText(Int64(total)))/s"
+    }
+
+    static func sizeText(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    // MARK: - Storage
+
+    /// Bytes used by completed downloads.
+    var totalDownloadedBytes: Int64 {
+        media.reduce(0) { $0 + ($1.fileSize ?? 0) }
+    }
+
+    /// Space the system says is genuinely available to us — used by the
+    /// download sheet to say what a download will leave free.
+    var deviceAvailableBytes: Int64 {
+        let key = URLResourceKey.volumeAvailableCapacityForImportantUsageKey
+        guard let values = try? directory.resourceValues(forKeys: [key]) else { return 0 }
+        return values.volumeAvailableCapacityForImportantUsage ?? 0
+    }
+
+    /// Fills in sizes for records saved before `fileSize` existed, and for any
+    /// whose measurement failed at completion. Without this the storage meter
+    /// silently under-reports older downloads.
+    private func backfillMissingSizes() {
+        var changed = false
+
+        for index in media.indices where media[index].fileSize == nil {
+            guard media[index].status == .downloaded,
+                  let url = localURL(forItemID: media[index].itemID),
+                  let size = try? FileManager.default.allocatedSizeOfDirectory(at: url)
+            else { continue }
+
+            media[index].fileSize = size
+            changed = true
+        }
+
+        if changed { saveRecords() }
     }
 
     // MARK: - Downloading
@@ -218,6 +279,16 @@ final class DownloadService: NSObject {
         activeTasks[itemID] = task
         progress[itemID] = 0
         task.resume()
+    }
+
+    /// Starts downloads for a batch of items, e.g. a whole season. Negotiation
+    /// happens one item at a time so a long season doesn't fire twenty parallel
+    /// PlaybackInfo and artwork requests at the server; the transfers
+    /// themselves still run concurrently once started.
+    func download(items: [BaseItemDto]) async {
+        for item in items {
+            await download(item: item)
+        }
     }
 
     /// Retries a failed download by re-fetching the item from the server.
@@ -381,6 +452,7 @@ final class DownloadService: NSObject {
     /// `downloading` without a matching live task is dropped, along with
     /// poster files nothing references anymore.
     private func reconcileWithSystem() {
+
         session.getAllTasks { [weak self] tasks in
             guard let self else { return }
 
@@ -498,7 +570,7 @@ extension DownloadService: AVAssetDownloadDelegate {
     }
 }
 
-private extension FileManager {
+extension FileManager {
 
     /// Total allocated size of a directory (or single file) in bytes.
     func allocatedSizeOfDirectory(at url: URL) throws -> Int64 {

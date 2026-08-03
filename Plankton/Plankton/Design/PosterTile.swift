@@ -14,17 +14,20 @@ struct PosterTile<Poster: View>: View {
     let title: String
     let subtitle: String?
     let badge: DownloadService.State?
+    let watchedProgress: Double?
     let poster: Poster
 
     init(
         title: String,
         subtitle: String? = nil,
         badge: DownloadService.State? = nil,
+        watchedProgress: Double? = nil,
         @ViewBuilder poster: () -> Poster
     ) {
         self.title = title
         self.subtitle = subtitle
         self.badge = badge
+        self.watchedProgress = watchedProgress
         self.poster = poster()
     }
 
@@ -33,6 +36,12 @@ struct PosterTile<Poster: View>: View {
             Color.clear
                 .aspectRatio(2 / 3, contentMode: .fit)
                 .overlay { poster }
+                // Inside the clip so the bar follows the artwork's corners.
+                .overlay(alignment: .bottom) {
+                    if let watchedProgress {
+                        WatchedProgressBar(progress: watchedProgress)
+                    }
+                }
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -57,5 +66,24 @@ struct PosterTile<Poster: View>: View {
                     .lineLimit(1)
             }
         }
+    }
+}
+
+/// How far through an item the viewer is, drawn across the foot of its poster.
+struct WatchedProgressBar: View {
+
+    let progress: Double
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Rectangle()
+                    .fill(.black.opacity(0.55))
+                Rectangle()
+                    .fill(Color.accentColor)
+                    .frame(width: geometry.size.width * min(max(progress, 0), 1))
+            }
+        }
+        .frame(height: 4)
     }
 }

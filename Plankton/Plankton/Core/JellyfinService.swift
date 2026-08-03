@@ -138,6 +138,12 @@ final class JellyfinService {
         return try await client.send(request).value
     }
 
+    /// Requests that return no body, e.g. the playback reporting endpoints.
+    func send(_ request: Request<Void>) async throws {
+        guard let client else { throw ConnectError.noServerSelected }
+        try await client.send(request)
+    }
+
     /// Authenticated URL for an item image.
     func imageURL(itemID: String, type: ImageType, tag: String? = nil, maxWidth: Int? = nil) -> URL? {
         guard let client else { return nil }
@@ -363,6 +369,14 @@ final class JellyfinService {
             Task { await self?.revalidateIfOffline() }
         }
         pathMonitor.start(queue: .main)
+    }
+
+    /// User-initiated retry from the offline header. Unlike the automatic
+    /// path this runs even without connectivity having returned, so tapping
+    /// Retry always does something.
+    func retryConnection() async {
+        guard isSignedIn else { return }
+        await validateSession()
     }
 
     private func revalidateIfOffline() async {

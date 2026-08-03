@@ -12,6 +12,7 @@ import SwiftUI
 struct DownloadsView: View {
 
     @Environment(DownloadService.self) private var downloads
+    @Environment(JellyfinService.self) private var jellyfin
 
     /// One grid entry: a single movie, or a series grouping its episodes.
     private enum Entry: Identifiable {
@@ -34,17 +35,6 @@ struct DownloadsView: View {
         }
     }
 
-    /// Individual items (episodes and movies alike) actively transferring,
-    /// newest first — shown as detailed rows above the completed grid.
-    private var downloadingItems: [DownloadedMedia] {
-        downloads.media
-            .filter { media in
-                guard case .downloading = downloads.state(for: media.itemID) else { return false }
-                return true
-            }
-            .sorted { $0.startedAt > $1.startedAt }
-    }
-
     private var entries: [Entry] {
         var movies: [Entry] = []
         var series: [String: (name: String, items: [DownloadedMedia])] = [:]
@@ -64,19 +54,13 @@ struct DownloadsView: View {
     var body: some View {
         NavigationStack {
             PosterGrid {
-                if !downloadingItems.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Downloading")
-                            .font(.headline)
-
-                        VStack(spacing: 12) {
-                            ForEach(downloadingItems) { media in
-                                DownloadProgressRow(media: media)
-                            }
-                        }
+                VStack(alignment: .leading, spacing: 14) {
+                    if jellyfin.isOffline {
+                        OfflineHeader()
                     }
-                    .padding(.horizontal)
-                    .padding(.top)
+                    if !downloads.media.isEmpty {
+                        DownloadStrip()
+                    }
                 }
             } content: {
                 ForEach(entries) { entry in

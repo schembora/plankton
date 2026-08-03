@@ -36,7 +36,6 @@ private struct MainTabView: View {
 
     @State private var selection: AppTab = .home
     @State private var showOfflineNotice = false
-    @State private var showOfflineOptions = false
 
     var body: some View {
         TabView(selection: $selection) {
@@ -65,32 +64,9 @@ private struct MainTabView: View {
         } message: {
             Text("Couldn't reach \(jellyfin.serverName ?? "your server"). You're in offline mode — your downloads are still available.")
         }
-        // Persistent offline indicator; tapping it offers a way back out.
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if jellyfin.isOffline {
-                Button {
-                    showOfflineOptions = true
-                } label: {
-                    Label("Offline", systemImage: "wifi.slash")
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .glassEffect(.regular, in: .capsule)
-                        .padding(.top, 4)
-                }
-                .buttonStyle(.plain)
-            }
-        }
+        // The offline state is stated by OfflineHeader at the top of the
+        // Downloads tab, rather than floating over whatever is on screen.
         .animation(.default, value: jellyfin.isOffline)
-        .confirmationDialog("You're Offline", isPresented: $showOfflineOptions, titleVisibility: .visible) {
-            Button("Change Server Address") {
-                Task { await jellyfin.leaveOfflineMode() }
-            }
-            Button("Stay Offline", role: .cancel) {}
-        } message: {
-            Text("Your downloads keep working while offline.")
-        }
     }
 
     private func handleOfflineMode() {

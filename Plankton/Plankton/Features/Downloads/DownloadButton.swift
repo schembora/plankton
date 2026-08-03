@@ -104,8 +104,8 @@ struct DownloadButton: View {
 
 /// Compact circular progress indicator with the percentage centered inside —
 /// for spots too tight for a labeled progress bar, e.g. the download button
-/// next to Play.
-private struct DownloadProgressRing: View {
+/// next to Play or the season button on a series page.
+struct DownloadProgressRing: View {
 
     let progress: Double
 

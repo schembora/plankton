@@ -20,9 +20,11 @@ struct PosterCard: View {
 
     var body: some View {
         PosterTile(
+            // For an episode this reads as the series name over "S2 E4".
             title: item.displayTitle,
-            subtitle: item.productionYear.map(String.init),
-            badge: downloads.state(for: item.id)
+            subtitle: item.posterSubtitle,
+            badge: downloads.state(for: item.id),
+            watchedProgress: item.watchedProgress
         ) {
             JellyfinImage(url: posterURL)
         }
@@ -30,7 +32,7 @@ struct PosterCard: View {
     }
 
     private var posterURL: URL? {
-        guard let source = item.primaryImageSource else { return nil }
+        guard let source = item.posterImageSource else { return nil }
         return jellyfin.imageURL(itemID: source.itemID, type: .primary, tag: source.tag, maxWidth: 500)
     }
 }
