@@ -17,5 +17,9 @@ jobs:
     - name: Build
       run: xcodebuild -project Plankton/Plankton.xcodeproj -scheme Plankton -destination 'generic/platform=iOS Simulator' -skipPackagePluginValidation build CODE_SIGNING_ALLOWED=NO
 
+    # Tests are ad-hoc signed rather than unsigned: CODE_SIGNING_ALLOWED=NO skips the
+    # simulated entitlements, and without an application-identifier the simulator
+    # keychain rejects every SecItem call, so KeychainStoreTests fails. Ad-hoc signing
+    # ("-") needs no certificate, so it still works on a runner with an empty keychain.
     - name: Run tests
-      run: xcodebuild -project Plankton/Plankton.xcodeproj -scheme Plankton -destination 'platform=iOS Simulator,OS=latest,name=iPhone 17' -skipPackagePluginValidation test CODE_SIGNING_ALLOWED=NO
+      run: xcodebuild -project Plankton/Plankton.xcodeproj -scheme Plankton -destination 'platform=iOS Simulator,OS=latest,name=iPhone 17' -skipPackagePluginValidation test CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=-
