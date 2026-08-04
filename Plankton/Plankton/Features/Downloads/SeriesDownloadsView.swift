@@ -33,9 +33,18 @@ struct SeriesDownloadsView: View {
         Array(Set(episodes.compactMap(\.seasonNumber))).sorted()
     }
 
+    /// The season actually on screen. `seasons` comes from the downloads on
+    /// disk, so it shifts underneath the selection — deleting a season's last
+    /// episode strands `selectedSeason` on a season that no longer exists.
+    /// Falling back to the first keeps a chip selected and the list populated.
+    private var currentSeason: Int? {
+        if let selectedSeason, seasons.contains(selectedSeason) { return selectedSeason }
+        return seasons.first
+    }
+
     private var visibleEpisodes: [DownloadedMedia] {
-        guard let selectedSeason = selectedSeason ?? seasons.first else { return episodes }
-        return episodes.filter { $0.seasonNumber == selectedSeason }
+        guard let currentSeason else { return episodes }
+        return episodes.filter { $0.seasonNumber == currentSeason }
     }
 
     var body: some View {
@@ -54,11 +63,6 @@ struct SeriesDownloadsView: View {
         }
         .ignoresSafeArea(edges: .top)
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            if selectedSeason == nil {
-                selectedSeason = seasons.first
-            }
-        }
         .fullScreenCover(item: $playback) { playback in
             PlayerContainerView(playback: playback)
         }
@@ -117,12 +121,12 @@ struct SeriesDownloadsView: View {
             // Shown even for a one-season show, so the episodes below are
             // always labelled with the season they came from.
             if !seasons.isEmpty {
-                Picker("Season", selection: $selectedSeason) {
-                    ForEach(seasons, id: \.self) { season in
-                        Text("Season \(season)").tag(season as Int?)
-                    }
-                }
-                .pickerStyle(.menu)
+                SeasonPicker(
+                    seasons: seasons,
+                    selection: Binding(get: { currentSeason }, set: { selectedSeason = $0 }),
+                    id: { $0 },
+                    label: { "S\($0)" }
+                )
             }
 
             ForEach(visibleEpisodes) { media in

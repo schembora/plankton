@@ -284,36 +284,15 @@ struct ItemDetailView: View {
         }
     }
 
-    /// Seasons as a scrolling segmented row rather than a menu, so switching
-    /// between them is one tap.
     private var seasonChips: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 8) {
-                ForEach(seasons) { season in
-                    let isSelected = season.id == selectedSeasonID
-                    Button {
-                        selectedSeasonID = season.id
-                    } label: {
-                        Text(season.indexNumber.map { "S\($0)" } ?? (season.name ?? "Season"))
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                            .foregroundStyle(isSelected ? .white : .primary)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background {
-                                if isSelected {
-                                    Capsule().fill(Color.accentColor)
-                                } else {
-                                    Capsule().strokeBorder(.tertiary, lineWidth: 1)
-                                }
-                            }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.vertical, 2)
-        }
-        .scrollIndicators(.hidden)
+        SeasonPicker(
+            seasons: seasons,
+            selection: $selectedSeasonID,
+            // A season without an ID can't be fetched anyway, so it simply
+            // never matches the selection.
+            id: { $0.id ?? "" },
+            label: { $0.indexNumber.map { "S\($0)" } ?? ($0.name ?? "Season") }
+        )
     }
 
     /// States what taking this season offline actually costs before opening
