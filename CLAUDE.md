@@ -29,7 +29,7 @@ xcodebuild -project Plankton/Plankton.xcodeproj -scheme Plankton \
 
 There is only one scheme (`Plankton`), covering the app, `PlanktonTests` (unit, Swift Testing), and `PlanktonUITests`.
 
-**Known issue:** the test targets currently fail to *link* — `PlanktonTests` pulls in `JellyfinAPI` but not its transitive SwiftNIO dependencies, so `xcodebuild test` dies with `symbol(s) not found` for `NIOPosix.MultiThreadedEventLoopGroup`. This predates any recent work; the app target itself builds fine. Fixing it means adding the NIO products to the test target's link phase.
+**Do not add `JellyfinAPI` (or any package product) to the `PlanktonTests` target.** `PlanktonTests` is a hosted bundle — it loads `Plankton.app`, so it already has every symbol the app links. Listing `JellyfinAPI` as a package product dependency of *both* targets makes Xcode rebuild it as a dynamic framework in `PackageFrameworks/`, and that framework fails to link its own transitive SwiftNIO dependencies (`symbol(s) not found` for `NIOCore`/`NIOPosix`). The failure is reported against the `JellyfinAPI` target, not the test target, which makes it look like a missing NIO dependency — adding NIO doesn't help. Test files still `import JellyfinAPI` normally; the module is found via the built products directory.
 
 ## Architecture
 

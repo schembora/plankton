@@ -7,6 +7,7 @@
 
 import Foundation
 import Get
+import JellyfinAPI
 import Testing
 
 @testable import Plankton
