@@ -166,13 +166,9 @@ struct ItemDetailView: View {
             Button {
                 if let target = resumeTarget { play(target) }
             } label: {
-                HStack(spacing: 8) {
-                    if isPreparingPlayback {
-                        ProgressView()
-                    }
-                    Label(resumeLabel, systemImage: "play.fill")
-                        .frame(maxWidth: .infinity)
-                }
+                Label(resumeLabel, systemImage: "play.fill")
+                    .frame(maxWidth: .infinity)
+                    .playbackSpinner(isPreparing: isPreparingPlayback)
             }
             .buttonStyle(.glassProminent)
             .controlSize(.large)
@@ -248,13 +244,9 @@ struct ItemDetailView: View {
         Button {
             play(displayed)
         } label: {
-            HStack(spacing: 8) {
-                if isPreparingPlayback {
-                    ProgressView()
-                }
-                Label("Play", systemImage: "play.fill")
-                    .frame(maxWidth: .infinity)
-            }
+            Label("Play", systemImage: "play.fill")
+                .frame(maxWidth: .infinity)
+                .playbackSpinner(isPreparing: isPreparingPlayback)
         }
         .buttonStyle(.glassProminent)
         .controlSize(.large)
@@ -433,5 +425,21 @@ private struct EpisodeRow: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+}
+
+private extension View {
+
+    /// Swaps a play button's label for a spinner while playback is being
+    /// negotiated. The spinner is overlaid rather than placed beside the label:
+    /// adding a view to the button's own layout re-measures the row, so the
+    /// button visibly resized the instant it was tapped.
+    func playbackSpinner(isPreparing: Bool) -> some View {
+        opacity(isPreparing ? 0 : 1)
+            .overlay {
+                if isPreparing {
+                    ProgressView()
+                }
+            }
     }
 }
