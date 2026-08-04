@@ -67,9 +67,12 @@ struct SeriesDownloadsView: View {
     // MARK: - Sections
 
     private var hero: some View {
-        LocalPosterImage(
-            url: downloads.seriesBackdropFileURL(forSeriesID: groupID),
-            fallback: downloads.backdropFileURL(forItemID: firstEpisodeItemID)
+        MediaImage(
+            artwork: .local(
+                downloads.seriesBackdropFileURL(forSeriesID: groupID),
+                fallback: downloads.backdropFileURL(forItemID: firstEpisodeItemID)
+            ),
+            placeholderIcon: "photo"
         )
         .frame(maxWidth: .infinity)
         .frame(height: 240)
@@ -85,10 +88,10 @@ struct SeriesDownloadsView: View {
 
     private var titleBlock: some View {
         HStack(alignment: .top, spacing: 16) {
-            LocalPosterImage(
-                url: downloads.seriesPosterFileURL(forSeriesID: groupID),
+            MediaImage(artwork: .local(
+                downloads.seriesPosterFileURL(forSeriesID: groupID),
                 fallback: downloads.posterFileURL(forItemID: firstEpisodeItemID)
-            )
+            ))
             .frame(width: 100, height: 150)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay {
@@ -129,7 +132,7 @@ struct SeriesDownloadsView: View {
                         title: media.title,
                         runtimeText: media.runtimeText
                     ) {
-                        LocalPosterImage(url: downloads.posterFileURL(forItemID: media.itemID))
+                        MediaImage(artwork: .local(downloads.posterFileURL(forItemID: media.itemID)), placeholderIcon: "tv")
                     } accessory: {
                         accessory(for: media)
                     }

@@ -24,7 +24,7 @@ struct DownloadCard: View {
             subtitle: subtitle,
             badge: downloads.state(for: media.itemID)
         ) {
-            LocalPosterImage(url: downloads.posterFileURL(forItemID: media.itemID))
+            MediaImage(artwork: .local(downloads.posterFileURL(forItemID: media.itemID)))
         }
         .onTapGesture(perform: play)
         .downloadActions(for: media)
@@ -103,10 +103,10 @@ struct SeriesDownloadCard: View {
             if let first = items.first {
                 // The series' own cover art, falling back to the first
                 // episode's art for downloads made before it was saved.
-                LocalPosterImage(
-                    url: downloads.seriesPosterFileURL(forSeriesID: groupID),
+                MediaImage(artwork: .local(
+                    downloads.seriesPosterFileURL(forSeriesID: groupID),
                     fallback: downloads.posterFileURL(forItemID: first.itemID)
-                )
+                ))
             }
         }
     }
@@ -124,44 +124,5 @@ struct SeriesDownloadCard: View {
         }
         if states.contains(.failed) { return .failed }
         return .downloaded
-    }
-}
-
-/// Poster image loaded from the local snapshot saved with a download.
-/// Falls back to another local file when the primary one is missing.
-struct LocalPosterImage: View {
-
-    let url: URL
-    let fallback: URL?
-
-    init(url: URL, fallback: URL? = nil) {
-        self.url = url
-        self.fallback = fallback
-    }
-
-    @State private var image: UIImage?
-
-    var body: some View {
-        Group {
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                ZStack {
-                    Rectangle().fill(.quaternary)
-                    Image(systemName: "film")
-                        .font(.title2)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-        }
-        .task {
-            if let loaded = UIImage(contentsOfFile: url.path) {
-                image = loaded
-            } else if let fallback, let loaded = UIImage(contentsOfFile: fallback.path) {
-                image = loaded
-            }
-        }
     }
 }

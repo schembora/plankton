@@ -15,11 +15,13 @@ struct PlanktonApp: App {
 
     @State private var jellyfin: JellyfinService
     @State private var downloads: DownloadService
+    @State private var images: ImageCache
 
     init() {
         let jellyfin = JellyfinService()
         _jellyfin = State(initialValue: jellyfin)
         _downloads = State(initialValue: DownloadService(jellyfin: jellyfin))
+        _images = State(initialValue: ImageCache(jellyfin: jellyfin))
     }
 
     var body: some Scene {
@@ -27,6 +29,7 @@ struct PlanktonApp: App {
             RootView()
                 .environment(jellyfin)
                 .environment(downloads)
+                .environment(images)
         }
     }
 }

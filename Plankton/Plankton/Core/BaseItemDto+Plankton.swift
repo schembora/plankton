@@ -122,4 +122,45 @@ extension BaseItemDto {
         }
         return nil
     }
+
+    /// The episode's own still, with no series fallback — unlike
+    /// `primaryImageSource`. A series poster is the wrong shape in a 16:9
+    /// thumbnail slot, so an episode without a still of its own gets nothing.
+    var episodeStillImageSource: (itemID: String, tag: String?)? {
+        guard let itemID = id, let tag = imageTags?[ImageType.primary.rawValue] else { return nil }
+        return (itemID, tag)
+    }
+
+    // MARK: - Artwork
+
+    /// Resolves one of the item's images into an `Artwork` for `MediaImage`, so
+    /// no view builds an image URL by hand. The `*ImageSource` properties above
+    /// stay as the lower-level pieces — `DownloadService` uses them directly to
+    /// snapshot art to disk.
+    func artwork(_ kind: Artwork.Kind, maxWidth: Int) -> Artwork? {
+        let source: (itemID: String, tag: String?)?
+        let imageType: ImageType
+
+        switch kind {
+        case .poster:
+            source = posterImageSource
+            imageType = .primary
+        case .primary:
+            source = primaryImageSource
+            imageType = .primary
+        case .backdrop:
+            source = backdropImageSource
+            imageType = .backdrop
+        case .wide:
+            source = wideImageSource
+            // An episode's wide art is its own still, which is a primary image.
+            imageType = type == .episode ? .primary : .backdrop
+        case .episodeStill:
+            source = episodeStillImageSource
+            imageType = .primary
+        }
+
+        guard let source else { return nil }
+        return .remote(itemID: source.itemID, type: imageType, tag: source.tag, maxWidth: maxWidth)
+    }
 }

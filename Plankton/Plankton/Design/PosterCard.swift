@@ -10,7 +10,6 @@ import SwiftUI
 
 struct PosterCard: View {
 
-    @Environment(JellyfinService.self) private var jellyfin
     @Environment(DownloadService.self) private var downloads
 
     let item: BaseItemDto
@@ -26,13 +25,8 @@ struct PosterCard: View {
             badge: downloads.state(for: item.id),
             watchedProgress: item.watchedProgress
         ) {
-            JellyfinImage(url: posterURL)
+            MediaImage(artwork: item.artwork(.poster, maxWidth: 500))
         }
         .frame(width: width)
-    }
-
-    private var posterURL: URL? {
-        guard let source = item.posterImageSource else { return nil }
-        return jellyfin.imageURL(itemID: source.itemID, type: .primary, tag: source.tag, maxWidth: 500)
     }
 }

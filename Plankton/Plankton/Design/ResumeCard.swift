@@ -12,7 +12,6 @@ import SwiftUI
 
 struct ResumeCard: View {
 
-    @Environment(JellyfinService.self) private var jellyfin
     @Environment(DownloadService.self) private var downloads
 
     let item: BaseItemDto
@@ -51,7 +50,7 @@ struct ResumeCard: View {
     private var artwork: some View {
         Color.clear
             .aspectRatio(16 / 9, contentMode: .fit)
-            .overlay { JellyfinImage(url: wideURL, placeholderIcon: "tv") }
+            .overlay { MediaImage(artwork: item.artwork(.wide, maxWidth: 700), placeholderIcon: "tv") }
             .overlay {
                 LinearGradient(
                     colors: [.clear, .black.opacity(0.55)],
@@ -87,11 +86,5 @@ struct ResumeCard: View {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .strokeBorder(.white.opacity(0.15), lineWidth: 0.5)
             }
-    }
-
-    private var wideURL: URL? {
-        guard let source = item.wideImageSource else { return nil }
-        let type: ImageType = item.type == .episode ? .primary : .backdrop
-        return jellyfin.imageURL(itemID: source.itemID, type: type, tag: source.tag, maxWidth: 700)
     }
 }

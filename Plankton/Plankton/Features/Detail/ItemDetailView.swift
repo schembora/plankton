@@ -115,7 +115,7 @@ struct ItemDetailView: View {
     // MARK: - Sections
 
     private var hero: some View {
-        JellyfinImage(url: backdropURL, placeholderIcon: "photo")
+        MediaImage(artwork: displayed.artwork(.backdrop, maxWidth: 1600), placeholderIcon: "photo")
             .frame(maxWidth: .infinity)
             .frame(height: 240)
             .clipped()
@@ -213,7 +213,7 @@ struct ItemDetailView: View {
 
     private var titleBlock: some View {
         HStack(alignment: .top, spacing: 16) {
-            JellyfinImage(url: posterURL)
+            MediaImage(artwork: displayed.artwork(.primary, maxWidth: 400))
                 .frame(width: 100, height: 150)
                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay {
@@ -428,20 +428,9 @@ struct ItemDetailView: View {
         }
     }
 
-    private var backdropURL: URL? {
-        guard let source = displayed.backdropImageSource else { return nil }
-        return jellyfin.imageURL(itemID: source.itemID, type: .backdrop, tag: source.tag, maxWidth: 1600)
-    }
-
-    private var posterURL: URL? {
-        guard let source = displayed.primaryImageSource else { return nil }
-        return jellyfin.imageURL(itemID: source.itemID, type: .primary, tag: source.tag, maxWidth: 400)
-    }
 }
 
 private struct EpisodeRow: View {
-
-    @Environment(JellyfinService.self) private var jellyfin
 
     let episode: BaseItemDto
 
@@ -452,7 +441,7 @@ private struct EpisodeRow: View {
             runtimeText: episode.runtimeText,
             watchedProgress: episode.watchedProgress
         ) {
-            JellyfinImage(url: thumbURL, placeholderIcon: "tv")
+            MediaImage(artwork: episode.artwork(.episodeStill, maxWidth: 420), placeholderIcon: "tv")
         } accessory: {
             HStack(spacing: 12) {
                 DownloadButton(item: episode)
@@ -463,10 +452,5 @@ private struct EpisodeRow: View {
                     .foregroundStyle(.secondary)
             }
         }
-    }
-
-    private var thumbURL: URL? {
-        guard let episodeID = episode.id else { return nil }
-        return jellyfin.imageURL(itemID: episodeID, type: .primary, maxWidth: 420)
     }
 }

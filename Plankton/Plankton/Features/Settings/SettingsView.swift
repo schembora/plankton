@@ -10,6 +10,7 @@ import SwiftUI
 struct SettingsView: View {
 
     @Environment(JellyfinService.self) private var jellyfin
+    @Environment(ImageCache.self) private var images
 
     @State private var isSigningOut = false
 
@@ -51,7 +52,10 @@ struct SettingsView: View {
 
     private func signOut() {
         isSigningOut = true
-        // Downloads stay on the device — they're not tied to the account.
+        // Downloads stay on the device — they're not tied to the account. Cached
+        // artwork isn't so neutral: it's a picture of what this account's library
+        // holds, so it goes with the session.
+        images.clear()
         Task {
             await jellyfin.signOut()
             isSigningOut = false
