@@ -263,7 +263,9 @@ struct ItemDetailView: View {
 
     private var seriesSection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if seasons.count > 1 {
+            // Shown even for a one-season show: the chip labels which season
+            // the episodes below belong to, which a bare list doesn't.
+            if !seasons.isEmpty {
                 seasonChips
             }
 

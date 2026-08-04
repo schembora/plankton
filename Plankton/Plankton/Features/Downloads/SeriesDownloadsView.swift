@@ -114,7 +114,9 @@ struct SeriesDownloadsView: View {
 
     private var episodeSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if seasons.count > 1 {
+            // Shown even for a one-season show, so the episodes below are
+            // always labelled with the season they came from.
+            if !seasons.isEmpty {
                 Picker("Season", selection: $selectedSeason) {
                     ForEach(seasons, id: \.self) { season in
                         Text("Season \(season)").tag(season as Int?)
