@@ -13,6 +13,7 @@ struct DownloadsView: View {
 
     @Environment(DownloadService.self) private var downloads
     @Environment(JellyfinService.self) private var jellyfin
+    @Environment(AppRouter.self) private var router
 
     /// One grid entry: a single movie, or a series grouping its episodes.
     private enum Entry: Identifiable {
@@ -52,7 +53,11 @@ struct DownloadsView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        // Path-bound so a Spotlight result can land on a downloaded series
+        // while the server is unreachable and the Library tab is disabled.
+        @Bindable var router = router
+
+        NavigationStack(path: $router.downloadsPath) {
             PosterGrid {
                 VStack(alignment: .leading, spacing: 14) {
                     if jellyfin.isOffline {
@@ -68,9 +73,7 @@ struct DownloadsView: View {
                     case .movie(let media):
                         DownloadCard(media: media)
                     case .series(let id, let name, let items):
-                        NavigationLink {
-                            SeriesDownloadsView(groupID: id, seriesName: name)
-                        } label: {
+                        NavigationLink(value: DownloadsRoute.series(groupID: id, name: name)) {
                             SeriesDownloadCard(name: name, groupID: id, items: items)
                         }
                         .buttonStyle(.plain)
@@ -94,6 +97,12 @@ struct DownloadsView: View {
                 }
             }
             .navigationTitle("Downloads")
+            .navigationDestination(for: DownloadsRoute.self) { route in
+                switch route {
+                case let .series(groupID, name):
+                    SeriesDownloadsView(groupID: groupID, seriesName: name)
+                }
+            }
         }
     }
 }

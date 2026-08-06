@@ -26,19 +26,19 @@ struct RootView: View {
     }
 }
 
-private enum AppTab {
-    case home, library, downloads, settings
-}
-
 private struct MainTabView: View {
 
     @Environment(JellyfinService.self) private var jellyfin
+    @Environment(AppRouter.self) private var router
 
-    @State private var selection: AppTab = .home
     @State private var showOfflineNotice = false
 
     var body: some View {
-        TabView(selection: $selection) {
+        // Which tab is showing lives on the router, not in local state: a
+        // Spotlight result or an intent has to be able to move it.
+        @Bindable var router = router
+
+        TabView(selection: $router.selectedTab) {
             Tab("Home", systemImage: "house", value: .home) {
                 HomeView()
             }
@@ -71,7 +71,7 @@ private struct MainTabView: View {
 
     private func handleOfflineMode() {
         guard jellyfin.isOffline else { return }
-        selection = .downloads
+        router.selectedTab = .downloads
         showOfflineNotice = true
     }
 }

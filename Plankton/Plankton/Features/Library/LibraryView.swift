@@ -13,6 +13,7 @@ import SwiftUI
 struct LibraryView: View {
 
     @Environment(JellyfinService.self) private var jellyfin
+    @Environment(AppRouter.self) private var router
 
     /// Which kind of media the grid is showing.
     private enum MediaFilter: String, CaseIterable, Identifiable {
@@ -72,6 +73,7 @@ struct LibraryView: View {
         var sort: SortOption
         var isAscending: Bool
         var genre: String?
+        var search: String
     }
 
     @State private var items: [BaseItemDto] = []
@@ -84,7 +86,11 @@ struct LibraryView: View {
     @State private var isAscending = false
     @State private var genre: String?
 
-    @State private var showSearchNotice = false
+    @State private var searchText = ""
+
+    /// What's actually sent to the server, updated a beat after typing stops.
+    @State private var searchTerm = ""
+
     @State private var loadFailed = false
 
     /// Bumped on every restart so results from a superseded query are dropped.
@@ -93,7 +99,7 @@ struct LibraryView: View {
     private let pageSize = 60
 
     private var query: Query {
-        Query(filter: filter, sort: sort, isAscending: isAscending, genre: genre)
+        Query(filter: filter, sort: sort, isAscending: isAscending, genre: genre, search: searchTerm)
     }
 
     private var hasActiveFilter: Bool {
@@ -101,12 +107,14 @@ struct LibraryView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        // Path-bound so Spotlight results and App Intents can push a detail
+        // page from outside the view tree.
+        @Bindable var router = router
+
+        NavigationStack(path: $router.libraryPath) {
             PosterGrid {
                 ForEach(items) { item in
-                    NavigationLink {
-                        ItemDetailView(item: item)
-                    } label: {
+                    NavigationLink(value: MediaRoute(item: item)) {
                         PosterCard(item: item, width: nil)
                     }
                     .buttonStyle(.plain)
@@ -129,6 +137,9 @@ struct LibraryView: View {
             .refreshable { await reload() }
             .safeAreaInset(edge: .top, spacing: 0) { filterBar }
             .overlay { emptyState }
+            .navigationDestination(for: MediaRoute.self) { route in
+                ItemDetailView(item: route.detailItem)
+            }
             // No navigation bar: the filter bar is the header, and a large
             // title fought the pinned inset for the same space.
             .toolbar(.hidden, for: .navigationBar)
@@ -140,6 +151,19 @@ struct LibraryView: View {
             .onChange(of: query) { _, _ in
                 Task { await reload() }
             }
+            // Debounced: a request per keystroke would hammer the server and
+            // leave results racing each other. `task(id:)` cancels the pending
+            // one on every edit, so only a pause in typing gets through.
+            .task(id: searchText) {
+                let typed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard typed != searchTerm else { return }
+
+                if !typed.isEmpty {
+                    try? await Task.sleep(for: .milliseconds(300))
+                    guard !Task.isCancelled else { return }
+                }
+                searchTerm = typed
+            }
             // Back online after offline mode — populate the grid.
             .onChange(of: jellyfin.isOffline) { _, isOffline in
                 if !isOffline, items.isEmpty {
@@ -148,11 +172,6 @@ struct LibraryView: View {
                         await loadGenres()
                     }
                 }
-            }
-            .alert("Search Is Coming Soon", isPresented: $showSearchNotice) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text("Searching your server isn't wired up yet. For now, narrow things down with the filters and sort options.")
             }
         }
     }
@@ -164,22 +183,7 @@ struct LibraryView: View {
     private var filterBar: some View {
         VStack(spacing: 10) {
             HStack(spacing: 8) {
-                Button {
-                    showSearchNotice = true
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "magnifyingglass")
-                        Text("Search")
-                        Spacer(minLength: 0)
-                    }
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .glassEffect(.regular, in: .capsule)
-                }
-                .buttonStyle(.plain)
-
+                searchField
                 sortMenu
             }
 
@@ -213,6 +217,36 @@ struct LibraryView: View {
                 .fill(.ultraThinMaterial)
                 .ignoresSafeArea(edges: .top)
         }
+    }
+
+    /// A field rather than `searchable`: the navigation bar is hidden so this
+    /// bar can be the header, and a system search field needs one to live in.
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+
+            TextField("Search", text: $searchText)
+                .textFieldStyle(.plain)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .submitLabel(.search)
+
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear Search")
+            }
+        }
+        .font(.subheadline)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .glassEffect(.regular, in: .capsule)
     }
 
     private var genreMenu: some View {
@@ -308,6 +342,8 @@ struct LibraryView: View {
                 }
                 .buttonStyle(.glass)
             }
+        } else if items.isEmpty, !searchTerm.isEmpty {
+            ContentUnavailableView.search(text: searchTerm)
         } else if items.isEmpty {
             ContentUnavailableView {
                 Label("Nothing Here", systemImage: "rectangle.stack")
@@ -383,6 +419,9 @@ struct LibraryView: View {
         parameters.enableUserData = true
         if let genre {
             parameters.genres = [genre]
+        }
+        if !searchTerm.isEmpty {
+            parameters.searchTerm = searchTerm
         }
 
         guard let result = try? await jellyfin.send(Paths.getItems(parameters: parameters)) else { return nil }
