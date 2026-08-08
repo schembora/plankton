@@ -71,23 +71,12 @@ struct SeriesDownloadsView: View {
     // MARK: - Sections
 
     private var hero: some View {
-        MediaImage(
+        DetailHero(
             artwork: .local(
                 downloads.seriesBackdropFileURL(forSeriesID: groupID),
                 fallback: downloads.backdropFileURL(forItemID: firstEpisodeItemID)
-            ),
-            placeholderIcon: "photo"
-        )
-        .frame(maxWidth: .infinity)
-        .frame(height: 240)
-        .clipped()
-        .overlay(alignment: .bottom) {
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.4)],
-                startPoint: .center,
-                endPoint: .bottom
             )
-        }
+        )
     }
 
     private var titleBlock: some View {
