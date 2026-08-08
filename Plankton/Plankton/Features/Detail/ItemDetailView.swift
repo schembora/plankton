@@ -203,10 +203,6 @@ struct ItemDetailView: View {
                 seasonChips
             }
 
-            if !episodes.isEmpty {
-                seasonDownloadRow
-            }
-
             ForEach(episodes.prefix(Self.episodePreviewCount)) { episode in
                 NavigationLink {
                     EpisodeDetailView(episode: episode)
@@ -255,39 +251,6 @@ struct ItemDetailView: View {
             id: { $0.id ?? "" },
             label: { $0.indexNumber.map { "S\($0)" } ?? ($0.name ?? "Season") }
         )
-    }
-
-    /// States what taking this season offline actually costs before opening
-    /// the scope sheet.
-    private var seasonDownloadRow: some View {
-        Button {
-            showDownloadScope = true
-        } label: {
-            GlassRow {
-                Image(systemName: "arrow.down.to.line")
-                    .font(.subheadline)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(selectedSeasonNumber.map { "Download season \($0)" } ?? "Download season")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-
-                    Text(seasonDownloadDetail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// "3 of 8 already on this device", or that everything is saved.
-    private var seasonDownloadDetail: String {
-        let saved = episodes.filter { downloads.state(for: $0.id) == .downloaded }.count
-        if saved == episodes.count {
-            return "All \(episodes.count) on this device"
-        }
-        return "\(saved) of \(episodes.count) already on this device"
     }
 
     private var selectedSeasonNumber: Int? {
