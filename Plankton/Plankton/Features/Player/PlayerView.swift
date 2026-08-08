@@ -50,6 +50,8 @@ struct PlayerContainerView: View {
 
 struct PlayerView: UIViewControllerRepresentable {
 
+    @Environment(ImageCache.self) private var images
+
     let playback: PlaybackItem
     let reporter: PlaybackReporter?
     let onError: (String) -> Void
@@ -74,6 +76,13 @@ struct PlayerView: UIViewControllerRepresentable {
         controller.allowsPictureInPicturePlayback = true
         controller.canStartPictureInPictureAutomaticallyFromInline = true
 
+        // NowPlayingCenter fills the lock screen instead: AVKit would publish
+        // the stream's own metadata, which for Jellyfin HLS is nothing at all.
+        controller.updatesNowPlayingInfoCenter = false
+        if let metadata = playback.metadata {
+            context.coordinator.beginNowPlaying(metadata, for: player, artwork: images)
+        }
+
         // Resume where the server says we left off. Seeking before play avoids
         // a visible jump from the opening frames.
         if let startTicks = playback.startTicks {
@@ -90,6 +99,7 @@ struct PlayerView: UIViewControllerRepresentable {
 
     static func dismantleUIViewController(_ uiViewController: AVPlayerViewController, coordinator: Coordinator) {
         coordinator.endReporting(for: uiViewController.player)
+        coordinator.endNowPlaying()
         uiViewController.player?.pause()
         uiViewController.player = nil
     }
@@ -110,12 +120,21 @@ struct PlayerView: UIViewControllerRepresentable {
     final class Coordinator {
         private let reporter: PlaybackReporter?
         private let onError: (String) -> Void
+        private let nowPlaying = NowPlayingCenter()
         private var observation: NSKeyValueObservation?
         private var timeObserver: Any?
 
         init(reporter: PlaybackReporter?, onError: @escaping (String) -> Void) {
             self.reporter = reporter
             self.onError = onError
+        }
+
+        func beginNowPlaying(_ metadata: NowPlayingMetadata, for player: AVPlayer, artwork cache: ImageCache) {
+            nowPlaying.start(metadata, for: player, artwork: cache)
+        }
+
+        func endNowPlaying() {
+            nowPlaying.stop()
         }
 
         /// Announces the play and then heartbeats position on an interval, so

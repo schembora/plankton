@@ -18,6 +18,10 @@ struct PlaybackItem: Identifiable {
 
     /// Where to resume from, in Jellyfin ticks.
     var startTicks: Int?
+
+    /// What the lock screen shows while this plays. Nil leaves the info center
+    /// alone rather than publishing an untitled entry.
+    var metadata: NowPlayingMetadata?
 }
 
 struct ItemDetailView: View {
@@ -377,7 +381,8 @@ struct ItemDetailView: View {
             playback = PlaybackItem(
                 url: localURL,
                 itemID: itemID,
-                startTicks: item.resumePositionTicks
+                startTicks: item.resumePositionTicks,
+                metadata: NowPlayingMetadata(item)
             )
             return
         }
@@ -393,7 +398,8 @@ struct ItemDetailView: View {
                 playback = PlaybackItem(
                     url: url,
                     itemID: item.id,
-                    startTicks: item.resumePositionTicks
+                    startTicks: item.resumePositionTicks,
+                    metadata: NowPlayingMetadata(item)
                 )
             } else {
                 playbackError = "This video isn't playable. The server may not support transcoding for it."

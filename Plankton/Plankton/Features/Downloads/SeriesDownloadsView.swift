@@ -186,6 +186,10 @@ struct SeriesDownloadsView: View {
         guard let url = downloads.localURL(forItemID: media.itemID) else { return }
         // Downloads have no cached watch position, but reporting still
         // works whenever the server is reachable.
-        playback = PlaybackItem(url: url, itemID: media.itemID)
+        playback = PlaybackItem(
+            url: url,
+            itemID: media.itemID,
+            metadata: NowPlayingMetadata(media, poster: downloads.posterFileURL(forItemID: media.itemID))
+        )
     }
 }
