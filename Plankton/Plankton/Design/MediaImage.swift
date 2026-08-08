@@ -19,6 +19,15 @@ struct MediaImage: View {
     let artwork: Artwork?
     var placeholderIcon: String = "film"
 
+    /// Holds the current image on screen while the next one loads, instead of
+    /// dropping to the placeholder first.
+    ///
+    /// Off by default because a recycled grid cell must not show the previous
+    /// item's art under a new title. A hero that swaps between siblings wants
+    /// the opposite: there, blanking to a placeholder for a frame is the whole
+    /// of the flicker.
+    var keepsPreviousWhileLoading = false
+
     @State private var image: UIImage?
     @State private var didFail = false
 
@@ -28,10 +37,13 @@ struct MediaImage: View {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
+                    .transition(.opacity)
             } else {
                 placeholder
+                    .transition(.opacity)
             }
         }
+        .animation(.easeInOut(duration: 0.2), value: image)
         // Keyed on the artwork: a recycled cell has to drop the previous
         // item's image rather than keep showing it under a new title.
         .task(id: artwork) {
@@ -48,12 +60,21 @@ struct MediaImage: View {
                 return
             }
 
-            image = nil
+            if !keepsPreviousWhileLoading {
+                image = nil
+            }
             didFail = false
 
             let loaded = await cache.image(for: artwork)
-            image = loaded
-            didFail = loaded == nil
+            if let loaded {
+                image = loaded
+                didFail = false
+            } else if !keepsPreviousWhileLoading {
+                // Holding the last image beats an error glyph when the next one
+                // can't be fetched — the caller asked for continuity.
+                image = nil
+                didFail = true
+            }
         }
     }
 

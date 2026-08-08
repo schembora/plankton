@@ -30,10 +30,7 @@ extension NowPlayingMetadata {
     init(_ item: BaseItemDto) {
         title = item.name ?? item.displayTitle
         if item.type == .episode {
-            subtitle = [item.seriesName, item.episodeLabel]
-                .compactMap { $0 }
-                .joined(separator: " · ")
-                .nilWhenEmpty
+            subtitle = [item.seriesName, item.episodeLabel].metadataLine
         } else {
             subtitle = item.productionYear.map(String.init)
         }
@@ -44,16 +41,9 @@ extension NowPlayingMetadata {
     /// `DownloadService`, so `DownloadedMedia` stays a plain snapshot.
     init(_ media: DownloadedMedia, poster: URL) {
         title = media.title
-        subtitle = [media.seriesName, media.episodeLabel]
-            .compactMap { $0 }
-            .joined(separator: " · ")
-            .nilWhenEmpty
+        subtitle = [media.seriesName, media.episodeLabel].metadataLine
         artwork = .local(poster)
     }
-}
-
-private extension String {
-    var nilWhenEmpty: String? { isEmpty ? nil : self }
 }
 
 /// Mirrors an `AVPlayer` into `MPNowPlayingInfoCenter` and wires the lock

@@ -16,13 +16,18 @@ struct ExpandableText: View {
     let text: String
     var lineLimit: Int = 4
 
+    /// Holds the collapsed block at its full line count even when the text is
+    /// shorter. Worth it where one of these is swapped for another in place —
+    /// otherwise each description sets its own height and everything below
+    /// jumps as they change.
+    var reservesSpace = false
+
     @State private var isExpanded = false
     @State private var isTruncated = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(text)
-                .lineLimit(isExpanded ? nil : lineLimit)
+            clampedText
                 .background { truncationProbe }
 
             if isTruncated {
@@ -41,6 +46,15 @@ struct ExpandableText: View {
         .onChange(of: text) { _, _ in
             isTruncated = false
             isExpanded = false
+        }
+    }
+
+    @ViewBuilder
+    private var clampedText: some View {
+        if isExpanded {
+            Text(text)
+        } else {
+            Text(text).lineLimit(lineLimit, reservesSpace: reservesSpace)
         }
     }
 

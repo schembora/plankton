@@ -45,8 +45,7 @@ struct ResumeCard: View {
     /// item — anything on the Next Up shelf — has nothing left to count down,
     /// so it shows its full runtime instead.
     private var meta: String? {
-        let parts = [item.episodeLabel, item.remainingText ?? item.runtimeText].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        [item.episodeLabel, item.remainingText ?? item.runtimeText].metadataLine
     }
 
     private var artwork: some View {

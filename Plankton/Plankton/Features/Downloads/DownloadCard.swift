@@ -35,8 +35,7 @@ struct DownloadCard: View {
 
     /// "S2 E4 · 45m" for episodes, "1h 32m" for movies.
     private var subtitle: String? {
-        let parts = [media.episodeLabel, media.runtimeText].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        [media.episodeLabel, media.runtimeText].metadataLine
     }
 
     private func play() {
