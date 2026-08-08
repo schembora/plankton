@@ -58,26 +58,18 @@ struct ItemDetailView: View {
                 hero
 
                 VStack(alignment: .leading, spacing: 20) {
-                    // A series states its identity over the backdrop, so the
-                    // resume control can lead instead of a poster.
+                    // Movies and series share one header: the poster with the
+                    // title and details set beside it. Only the action row
+                    // below differs, since a series resumes into an episode.
+                    titleBlock
+
                     if isSeries {
                         resumeRow
-                    } else {
-                        titleBlock
-
-                        if isPlayable {
-                            HStack(spacing: 12) {
-                                playButton
-                                DownloadButton(item: displayed, style: .prominent)
-                            }
+                    } else if isPlayable {
+                        HStack(spacing: 12) {
+                            playButton
+                            DownloadButton(item: displayed, style: .prominent)
                         }
-                    }
-
-                    // Before the season list: on a series the episode rows are
-                    // long enough to push the description off-screen entirely.
-                    if let overview = displayed.overview, !overview.isEmpty {
-                        Text(overview)
-                            .foregroundStyle(.secondary)
                     }
 
                     if isSeries {
@@ -137,38 +129,6 @@ struct ItemDetailView: View {
                     endPoint: .bottom
                 )
             }
-            .overlay(alignment: .bottomLeading) {
-                if isSeries {
-                    seriesHeroTitle
-                }
-            }
-    }
-
-    private var seriesHeroTitle: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(displayed.displayTitle)
-                .font(.title)
-                .fontWeight(.bold)
-
-            HStack(spacing: 8) {
-                if let year = displayed.productionYear {
-                    Text(String(year))
-                }
-                if !seasons.isEmpty {
-                    Text("\(seasons.count) \(seasons.count == 1 ? "season" : "seasons")")
-                }
-                if let rating = displayed.officialRating {
-                    Text(rating)
-                }
-                if let genre = displayed.genres?.first {
-                    Text(genre)
-                }
-            }
-            .font(.subheadline)
-        }
-        .foregroundStyle(.white)
-        .shadow(radius: 6)
-        .padding(16)
     }
 
     /// Resume banner plus a control to take the season offline.
@@ -233,22 +193,50 @@ struct ItemDetailView: View {
                     .font(.title2)
                     .fontWeight(.bold)
 
-                HStack(spacing: 8) {
-                    if let year = displayed.productionYear {
-                        Text(String(year))
-                    }
-                    if let runtime = displayed.runtimeText {
-                        Text(runtime)
-                    }
-                    if let rating = displayed.officialRating {
-                        Text(rating)
-                    }
+                // One string rather than a row of them: beside a poster there
+                // isn't width for four details, and text wraps where an HStack
+                // would push the last of them off the edge.
+                Text(metadataLine)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                // Set beside the poster rather than under the whole header.
+                // Four lines of this column run to about the poster's height,
+                // so the block stays square before the description spills past.
+                if let overview = displayed.overview, !overview.isEmpty {
+                    ExpandableText(text: overview)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 2)
                 }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// Year, then whatever states how long the thing is — a runtime for a
+    /// movie, a season count for a series — then certification and lead genre.
+    private var metadataLine: String {
+        var parts: [String] = []
+
+        if let year = displayed.productionYear {
+            parts.append(String(year))
+        }
+        if isSeries {
+            if !seasons.isEmpty {
+                parts.append("\(seasons.count) \(seasons.count == 1 ? "Season" : "Seasons")")
+            }
+        } else if let runtime = displayed.runtimeText {
+            parts.append(runtime)
+        }
+        if let rating = displayed.officialRating {
+            parts.append(rating)
+        }
+        if let genre = displayed.genres?.first {
+            parts.append(genre)
+        }
+
+        return parts.joined(separator: " · ")
     }
 
     private var playButton: some View {
