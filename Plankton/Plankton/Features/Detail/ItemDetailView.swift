@@ -160,7 +160,9 @@ struct ItemDetailView: View {
         DetailHeader(
             title: displayed.displayTitle,
             metadata: metadataLine,
-            overview: displayed.overview
+            overview: displayed.overview,
+            rating: displayed.communityRatingText,
+            ratingURL: displayed.imdbURL
         ) {
             DetailPoster(artwork: displayed.artwork(.primary, maxWidth: 400))
         }

@@ -93,6 +93,49 @@ struct BaseItemDtoDisplayTests {
         #expect(episode.remainingText == "18m left")
     }
 
+    @Test func imdbLinkIsBuiltFromTheProviderID() {
+        var movie = BaseItemDto()
+        movie.providerIDs = ["Imdb": "tt0133093", "Tmdb": "603"]
+
+        #expect(movie.imdbURL?.absoluteString == "https://www.imdb.com/title/tt0133093/")
+    }
+
+    /// Metadata plugins have disagreed about the casing of this key, and an
+    /// exact match would drop the link with nothing to show for it.
+    @Test func imdbProviderKeyIsMatchedCaseInsensitively() {
+        var movie = BaseItemDto()
+        movie.providerIDs = ["IMDB": "tt0133093"]
+
+        #expect(movie.imdbURL?.absoluteString == "https://www.imdb.com/title/tt0133093/")
+    }
+
+    @Test func itemsWithoutAnImdbIDHaveNoLink() {
+        var movie = BaseItemDto()
+        #expect(movie.imdbURL == nil)
+
+        movie.providerIDs = ["Tmdb": "603"]
+        #expect(movie.imdbURL == nil)
+
+        // Present but blank — the link would go to a 404.
+        movie.providerIDs = ["Imdb": ""]
+        #expect(movie.imdbURL == nil)
+    }
+
+    @Test func communityRatingIsShownToOneDecimal() {
+        var movie = BaseItemDto()
+        movie.communityRating = 8.649
+
+        #expect(movie.communityRatingText == "8.6")
+
+        movie.communityRating = 8
+        #expect(movie.communityRatingText == "8.0")
+    }
+
+    @Test func unratedItemsHaveNoRatingText() {
+        let movie = BaseItemDto()
+        #expect(movie.communityRatingText == nil)
+    }
+
     /// What the Next Up shelf shows: an episode nobody has started has nothing
     /// to count down and no progress to draw, so `ResumeCard` falls back to the
     /// runtime and omits the bar.

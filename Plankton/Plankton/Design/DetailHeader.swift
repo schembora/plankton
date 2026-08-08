@@ -18,6 +18,13 @@ struct DetailHeader<Poster: View, Lead: View>: View {
     let metadata: String?
     let overview: String?
 
+    /// The community score, on its own line under the details.
+    var rating: String?
+
+    /// Where the rating leads when tapped. Without one it's plain text — an
+    /// item the server has no IMDb ID for still has a score worth showing.
+    var ratingURL: URL?
+
     /// Holds the collapsed description at its full height. For a page that
     /// swaps between items in place, so the content below doesn't jump.
     var reservesDescriptionSpace = false
@@ -47,6 +54,10 @@ struct DetailHeader<Poster: View, Lead: View>: View {
                         .foregroundStyle(.secondary)
                 }
 
+                if let rating {
+                    ratingLabel(rating)
+                }
+
                 // Set beside the poster rather than under the whole header.
                 // Four lines of this column run to about the poster's height,
                 // so the block stays square before the description spills past.
@@ -60,6 +71,24 @@ struct DetailHeader<Poster: View, Lead: View>: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
+
+    /// The score as a link where there's somewhere to send it. Tinted rather
+    /// than badged: it sits inline with the details above it, and a button's
+    /// worth of chrome around one number overwhelmed that whole column.
+    @ViewBuilder
+    private func ratingLabel(_ rating: String) -> some View {
+        let label = Label(rating, systemImage: "star.fill")
+            .font(.subheadline)
+            .fontWeight(.medium)
+
+        if let ratingURL {
+            Link(destination: ratingURL) { label }
+                .foregroundStyle(Color.accentColor)
+                .accessibilityLabel("Rated \(rating) out of 10. View on IMDb")
+        } else {
+            label.foregroundStyle(.secondary)
+        }
+    }
 }
 
 extension DetailHeader where Lead == EmptyView {
@@ -68,6 +97,8 @@ extension DetailHeader where Lead == EmptyView {
         title: String,
         metadata: String?,
         overview: String?,
+        rating: String? = nil,
+        ratingURL: URL? = nil,
         reservesDescriptionSpace: Bool = false,
         @ViewBuilder poster: () -> Poster
     ) {
@@ -75,6 +106,8 @@ extension DetailHeader where Lead == EmptyView {
             title: title,
             metadata: metadata,
             overview: overview,
+            rating: rating,
+            ratingURL: ratingURL,
             reservesDescriptionSpace: reservesDescriptionSpace,
             poster: poster,
             lead: { EmptyView() }

@@ -31,6 +31,29 @@ extension BaseItemDto {
         return "\(minutes)m"
     }
 
+    /// The item's page on IMDb, when the server knows its ID.
+    ///
+    /// The provider key is matched case-insensitively: Jellyfin writes "Imdb",
+    /// but the casing has varied between metadata plugins, and an exact match
+    /// would drop the link with nothing to show for it.
+    var imdbURL: URL? {
+        let id = providerIDs?
+            .first { $0.key.caseInsensitiveCompare("Imdb") == .orderedSame }?
+            .value
+
+        guard let id, !id.isEmpty else { return nil }
+        return URL(string: "https://www.imdb.com/title/\(id)/")
+    }
+
+    /// e.g. "8.6" — the community score out of ten.
+    ///
+    /// Whichever metadata provider the server used supplied this, so it isn't
+    /// labelled as IMDb's even where the two agree.
+    var communityRatingText: String? {
+        guard let communityRating else { return nil }
+        return String(format: "%.1f", communityRating)
+    }
+
     /// e.g. "S2 E4" for episodes.
     var episodeLabel: String? {
         guard type == .episode else { return nil }

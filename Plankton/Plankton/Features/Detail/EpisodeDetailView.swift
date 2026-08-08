@@ -73,8 +73,14 @@ struct EpisodeDetailView: View {
             // The episode's own name: `displayTitle` answers with the series,
             // which is right in a grid tile and wrong here.
             title: displayed.name ?? "Episode",
-            metadata: [displayed.episodeLabel, displayed.runtimeText, airDate].metadataLine,
+            metadata: [
+                displayed.episodeLabel,
+                displayed.runtimeText,
+                airDate,
+            ].metadataLine,
             overview: displayed.overview,
+            rating: displayed.communityRatingText,
+            ratingURL: displayed.imdbURL,
             // Sliding between episodes would otherwise resize this block and
             // shift the strip out from under the finger tapping it.
             reservesDescriptionSpace: true
