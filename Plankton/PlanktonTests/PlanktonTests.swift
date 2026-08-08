@@ -82,6 +82,29 @@ struct BaseItemDtoDisplayTests {
 
         #expect(episode.runtimeText == "45m")
     }
+
+    @Test func remainingCountsDownFromThePlaybackPosition() {
+        var episode = BaseItemDto()
+        episode.runTimeTicks = 45 * 600_000_000
+        var userData = UserItemDataDto()
+        userData.playbackPositionTicks = 27 * 600_000_000
+        episode.userData = userData
+
+        #expect(episode.remainingText == "18m left")
+    }
+
+    /// What the Next Up shelf shows: an episode nobody has started has nothing
+    /// to count down and no progress to draw, so `ResumeCard` falls back to the
+    /// runtime and omits the bar.
+    @Test func unstartedEpisodeHasNoRemainingTextOrProgress() {
+        var episode = BaseItemDto()
+        episode.type = .episode
+        episode.runTimeTicks = 45 * 600_000_000
+
+        #expect(episode.remainingText == nil)
+        #expect(episode.watchedProgress == nil)
+        #expect(episode.runtimeText == "45m")
+    }
 }
 
 @MainActor

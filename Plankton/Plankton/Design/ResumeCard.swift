@@ -41,9 +41,11 @@ struct ResumeCard: View {
         .frame(width: 232)
     }
 
-    /// "S2 E4 · 18m left", falling back to whichever half is known.
+    /// "S2 E4 · 18m left", falling back to whichever half is known. An unstarted
+    /// item — anything on the Next Up shelf — has nothing left to count down,
+    /// so it shows its full runtime instead.
     private var meta: String? {
-        let parts = [item.episodeLabel, item.remainingText].compactMap { $0 }
+        let parts = [item.episodeLabel, item.remainingText ?? item.runtimeText].compactMap { $0 }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 

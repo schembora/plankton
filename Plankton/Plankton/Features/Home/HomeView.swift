@@ -14,13 +14,14 @@ struct HomeView: View {
     @Environment(DownloadService.self) private var downloads
 
     @State private var resumeItems: [BaseItemDto] = []
+    @State private var nextUpItems: [BaseItemDto] = []
     @State private var latestMovies: [BaseItemDto] = []
     @State private var latestShows: [BaseItemDto] = []
     @State private var isLoading = true
     @State private var loadFailed = false
 
     private var isEmpty: Bool {
-        resumeItems.isEmpty && latestMovies.isEmpty && latestShows.isEmpty
+        resumeItems.isEmpty && nextUpItems.isEmpty && latestMovies.isEmpty && latestShows.isEmpty
     }
 
     var body: some View {
@@ -54,7 +55,10 @@ struct HomeView: View {
                             DownloadStrip(showsStorage: false)
                         }
                         if !resumeItems.isEmpty {
-                            continueWatching
+                            ResumeRow(title: "Continue Watching", items: resumeItems)
+                        }
+                        if !nextUpItems.isEmpty {
+                            ResumeRow(title: "Next Up", items: nextUpItems)
                         }
                         if !latestMovies.isEmpty {
                             MediaRow(title: "Latest Movies", items: latestMovies)
@@ -76,54 +80,6 @@ struct HomeView: View {
                 }
             }
         }
-    }
-
-    /// Wide resume cards rather than posters — what you were part-way through
-    /// leads the screen.
-    private var continueWatching: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Continue Watching")
-                .font(.title2)
-                .fontWeight(.bold)
-                .padding(.horizontal)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(alignment: .top, spacing: 12) {
-                    ForEach(resumeItems) { item in
-                        NavigationLink {
-                            destination(for: item)
-                        } label: {
-                            ResumeCard(item: item)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal)
-                .scrollTargetLayout()
-            }
-            .scrollTargetBehavior(.viewAligned)
-        }
-    }
-
-    /// An episode lands on its series with itself surfaced for resume, rather
-    /// than on a detail page for the single episode.
-    @ViewBuilder
-    private func destination(for item: BaseItemDto) -> some View {
-        if item.type == .episode, let seriesID = item.seriesID {
-            ItemDetailView(item: seriesStub(id: seriesID, name: item.seriesName), resumeEpisode: item)
-        } else {
-            ItemDetailView(item: item)
-        }
-    }
-
-    /// `ItemDetailView` refetches by ID on appear, so an ID and type are enough
-    /// to land on the series.
-    private func seriesStub(id: String, name: String?) -> BaseItemDto {
-        var stub = BaseItemDto()
-        stub.id = id
-        stub.type = .series
-        stub.name = name
-        return stub
     }
 
     private func load() async {
@@ -156,17 +112,31 @@ struct HomeView: View {
         resumeParameters.enableUserData = true
         resumeParameters.limit = 20
 
+        var nextUpParameters = Paths.GetNextUpParameters()
+        nextUpParameters.userID = userID
+        nextUpParameters.enableUserData = true
+        nextUpParameters.limit = 20
+        // A part-watched episode is already on the Continue Watching shelf, and
+        // the server would otherwise return it here too.
+        nextUpParameters.enableResumable = false
+        // "Next up" means the episode after one you finished, so a series you
+        // have never started stays off the shelf instead of offering episode 1.
+        nextUpParameters.isDisableFirstEpisode = true
+
         do {
             let movieRequest = Paths.getLatestMedia(parameters: movieParameters)
             let showRequest = Paths.getItems(parameters: showParameters)
             let resumeRequest = Paths.getResumeItems(parameters: resumeParameters)
+            let nextUpRequest = Paths.getNextUp(parameters: nextUpParameters)
             async let movies = jellyfin.send(movieRequest)
             async let shows = jellyfin.send(showRequest)
             async let resuming = jellyfin.send(resumeRequest)
+            async let nextUp = jellyfin.send(nextUpRequest)
 
             latestMovies = try await movies
             latestShows = try await shows.items ?? []
             resumeItems = try await resuming.items ?? []
+            nextUpItems = try await nextUp.items ?? []
         } catch {
             loadFailed = true
         }
