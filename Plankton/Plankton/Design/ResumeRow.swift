@@ -39,24 +39,15 @@ struct ResumeRow: View {
         }
     }
 
-    /// An episode lands on its series with itself surfaced for playback, rather
-    /// than on a detail page for the single episode.
+    /// Both shelves point at one specific episode, so that episode's own page
+    /// is where they lead — its description included. The series is a tap
+    /// further on from there.
     @ViewBuilder
     private func destination(for item: BaseItemDto) -> some View {
-        if item.type == .episode, let seriesID = item.seriesID {
-            ItemDetailView(item: seriesStub(id: seriesID, name: item.seriesName), resumeEpisode: item)
+        if item.type == .episode {
+            EpisodeDetailView(episode: item)
         } else {
             ItemDetailView(item: item)
         }
-    }
-
-    /// `ItemDetailView` refetches by ID on appear, so an ID and type are enough
-    /// to land on the series.
-    private func seriesStub(id: String, name: String?) -> BaseItemDto {
-        var stub = BaseItemDto()
-        stub.id = id
-        stub.type = .series
-        stub.name = name
-        return stub
     }
 }

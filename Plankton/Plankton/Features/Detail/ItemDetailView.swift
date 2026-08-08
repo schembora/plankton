@@ -38,9 +38,7 @@ struct ItemDetailView: View {
     @State private var seasons: [BaseItemDto] = []
     @State private var selectedSeasonID: String?
     @State private var episodes: [BaseItemDto] = []
-    @State private var playback: PlaybackItem?
-    @State private var isPreparingPlayback = false
-    @State private var playbackError: String?
+    @State private var launcher = PlaybackLauncher()
     @State private var showDownloadScope = false
     @State private var similar: [BaseItemDto] = []
 
@@ -92,9 +90,6 @@ struct ItemDetailView: View {
         .onChange(of: selectedSeasonID) { _, _ in
             Task { await loadEpisodes() }
         }
-        .fullScreenCover(item: $playback) { playback in
-            PlayerContainerView(playback: playback)
-        }
         .sheet(isPresented: $showDownloadScope) {
             if let seriesID = displayed.id {
                 DownloadScopeSheet(
@@ -105,30 +100,13 @@ struct ItemDetailView: View {
                 .presentationDetents([.medium, .large])
             }
         }
-        .alert("Couldn't Play Video", isPresented: .init(
-            get: { playbackError != nil },
-            set: { if !$0 { playbackError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(playbackError ?? "")
-        }
+        .playbackPresentation(launcher)
     }
 
     // MARK: - Sections
 
     private var hero: some View {
-        MediaImage(artwork: displayed.artwork(.backdrop, maxWidth: 1600), placeholderIcon: "photo")
-            .frame(maxWidth: .infinity)
-            .frame(height: 240)
-            .clipped()
-            .overlay(alignment: .bottom) {
-                LinearGradient(
-                    colors: [.clear, .black.opacity(0.55)],
-                    startPoint: .center,
-                    endPoint: .bottom
-                )
-            }
+        DetailHero(artwork: displayed.artwork(.backdrop, maxWidth: 1600))
     }
 
     /// Resume banner plus a control to take the season offline.
@@ -139,11 +117,11 @@ struct ItemDetailView: View {
             } label: {
                 Label(resumeLabel, systemImage: "play.fill")
                     .frame(maxWidth: .infinity)
-                    .playbackSpinner(isPreparing: isPreparingPlayback)
+                    .playbackSpinner(isPreparing: launcher.isPreparing)
             }
             .buttonStyle(.glassProminent)
             .controlSize(.large)
-            .disabled(isPreparingPlayback || resumeTarget == nil)
+            .disabled(launcher.isPreparing || resumeTarget == nil)
 
             Button {
                 showDownloadScope = true
@@ -161,8 +139,8 @@ struct ItemDetailView: View {
     private var resumeLabel: String {
         guard let target = resumeTarget else { return "Play" }
         let verb = target.resumePositionTicks == nil ? "Play" : "Resume"
-        let parts = [target.episodeLabel, target.remainingText].compactMap { $0 }
-        return parts.isEmpty ? verb : "\(verb) \(parts.joined(separator: " · "))"
+        guard let detail = [target.episodeLabel, target.remainingText].metadataLine else { return verb }
+        return "\(verb) \(detail)"
     }
 
     /// The episode Continue Watching sent us to, otherwise the first one still
@@ -179,64 +157,29 @@ struct ItemDetailView: View {
     }
 
     private var titleBlock: some View {
-        HStack(alignment: .top, spacing: 16) {
-            MediaImage(artwork: displayed.artwork(.primary, maxWidth: 400))
-                .frame(width: 100, height: 150)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(.white.opacity(0.15), lineWidth: 0.5)
-                }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(displayed.displayTitle)
-                    .font(.title2)
-                    .fontWeight(.bold)
-
-                // One string rather than a row of them: beside a poster there
-                // isn't width for four details, and text wraps where an HStack
-                // would push the last of them off the edge.
-                Text(metadataLine)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-
-                // Set beside the poster rather than under the whole header.
-                // Four lines of this column run to about the poster's height,
-                // so the block stays square before the description spills past.
-                if let overview = displayed.overview, !overview.isEmpty {
-                    ExpandableText(text: overview)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 2)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        DetailHeader(
+            title: displayed.displayTitle,
+            metadata: metadataLine,
+            overview: displayed.overview
+        ) {
+            DetailPoster(artwork: displayed.artwork(.primary, maxWidth: 400))
         }
     }
 
     /// Year, then whatever states how long the thing is — a runtime for a
     /// movie, a season count for a series — then certification and lead genre.
-    private var metadataLine: String {
-        var parts: [String] = []
+    private var metadataLine: String? {
+        [
+            displayed.productionYear.map(String.init),
+            isSeries ? seasonCountText : displayed.runtimeText,
+            displayed.officialRating,
+            displayed.genres?.first,
+        ].metadataLine
+    }
 
-        if let year = displayed.productionYear {
-            parts.append(String(year))
-        }
-        if isSeries {
-            if !seasons.isEmpty {
-                parts.append("\(seasons.count) \(seasons.count == 1 ? "Season" : "Seasons")")
-            }
-        } else if let runtime = displayed.runtimeText {
-            parts.append(runtime)
-        }
-        if let rating = displayed.officialRating {
-            parts.append(rating)
-        }
-        if let genre = displayed.genres?.first {
-            parts.append(genre)
-        }
-
-        return parts.joined(separator: " · ")
+    private var seasonCountText: String? {
+        guard !seasons.isEmpty else { return nil }
+        return "\(seasons.count) \(seasons.count == 1 ? "Season" : "Seasons")"
     }
 
     private var playButton: some View {
@@ -245,11 +188,11 @@ struct ItemDetailView: View {
         } label: {
             Label("Play", systemImage: "play.fill")
                 .frame(maxWidth: .infinity)
-                .playbackSpinner(isPreparing: isPreparingPlayback)
+                .playbackSpinner(isPreparing: launcher.isPreparing)
         }
         .buttonStyle(.glassProminent)
         .controlSize(.large)
-        .disabled(isPreparingPlayback)
+        .disabled(launcher.isPreparing)
     }
 
     private var seriesSection: some View {
@@ -264,15 +207,43 @@ struct ItemDetailView: View {
                 seasonDownloadRow
             }
 
-            ForEach(episodes) { episode in
-                Button {
-                    play(episode)
+            ForEach(episodes.prefix(Self.episodePreviewCount)) { episode in
+                NavigationLink {
+                    EpisodeDetailView(episode: episode)
                 } label: {
-                    EpisodeRow(episode: episode)
+                    EpisodeRow(episode: episode) { play(episode) }
                 }
                 .buttonStyle(.plain)
             }
+
+            if episodes.count > Self.episodePreviewCount {
+                seeAllEpisodesRow
+            }
         }
+    }
+
+    /// How many episodes the series page shows before handing off to the full
+    /// list. A 24-episode season would otherwise bury everything below it —
+    /// the description of an episode now lives on its own page anyway, so this
+    /// list only has to be long enough to pick from.
+    private static let episodePreviewCount = 6
+
+    private var seeAllEpisodesRow: some View {
+        NavigationLink {
+            SeasonEpisodesView(title: seasonTitle, episodes: episodes)
+        } label: {
+            GlassRow {
+                Text("See All \(episodes.count) Episodes")
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+            }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+    }
+
+    private var seasonTitle: String {
+        selectedSeasonNumber.map { "Season \($0)" } ?? "Episodes"
     }
 
     private var seasonChips: some View {
@@ -292,7 +263,7 @@ struct ItemDetailView: View {
         Button {
             showDownloadScope = true
         } label: {
-            HStack(spacing: 12) {
+            GlassRow {
                 Image(systemName: "arrow.down.to.line")
                     .font(.subheadline)
 
@@ -305,15 +276,7 @@ struct ItemDetailView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-
-                Spacer(minLength: 8)
-
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
             }
-            .padding(14)
-            .glassEffect(.regular, in: .rect(cornerRadius: 16))
         }
         .buttonStyle(.plain)
     }
@@ -388,76 +351,7 @@ struct ItemDetailView: View {
     // MARK: - Playback & URLs
 
     private func play(_ item: BaseItemDto) {
-        // Prefer the downloaded copy when there is one — instant and offline-capable.
-        if let itemID = item.id, let localURL = downloads.localURL(forItemID: itemID) {
-            playback = PlaybackItem(
-                url: localURL,
-                itemID: itemID,
-                startTicks: item.resumePositionTicks,
-                metadata: NowPlayingMetadata(item)
-            )
-            return
-        }
-
-        guard !isPreparingPlayback else { return }
-        isPreparingPlayback = true
-
-        Task {
-            let url = await jellyfin.playbackURL(for: item)
-            isPreparingPlayback = false
-
-            if let url {
-                playback = PlaybackItem(
-                    url: url,
-                    itemID: item.id,
-                    startTicks: item.resumePositionTicks,
-                    metadata: NowPlayingMetadata(item)
-                )
-            } else {
-                playbackError = "This video isn't playable. The server may not support transcoding for it."
-            }
-        }
+        launcher.play(item, jellyfin: jellyfin, downloads: downloads)
     }
 
-}
-
-private struct EpisodeRow: View {
-
-    let episode: BaseItemDto
-
-    var body: some View {
-        EpisodeCard(
-            label: episode.episodeLabel,
-            title: episode.name ?? "Episode",
-            runtimeText: episode.runtimeText,
-            watchedProgress: episode.watchedProgress
-        ) {
-            MediaImage(artwork: episode.artwork(.episodeStill, maxWidth: 420), placeholderIcon: "tv")
-        } accessory: {
-            HStack(spacing: 12) {
-                DownloadButton(item: episode)
-                    .font(.title3)
-
-                Image(systemName: "play.circle")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-}
-
-private extension View {
-
-    /// Swaps a play button's label for a spinner while playback is being
-    /// negotiated. The spinner is overlaid rather than placed beside the label:
-    /// adding a view to the button's own layout re-measures the row, so the
-    /// button visibly resized the instant it was tapped.
-    func playbackSpinner(isPreparing: Bool) -> some View {
-        opacity(isPreparing ? 0 : 1)
-            .overlay {
-                if isPreparing {
-                    ProgressView()
-                }
-            }
-    }
 }
