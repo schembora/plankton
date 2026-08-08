@@ -42,6 +42,7 @@ struct ItemDetailView: View {
     @State private var isPreparingPlayback = false
     @State private var playbackError: String?
     @State private var showDownloadScope = false
+    @State private var similar: [BaseItemDto] = []
 
     private var displayed: BaseItemDto { fullItem ?? item }
 
@@ -84,6 +85,12 @@ struct ItemDetailView: View {
                     }
                 }
                 .padding(.horizontal)
+
+                // Outside the padded stack: MediaRow insets its own content so
+                // the shelf can scroll out to the screen edge.
+                if !similar.isEmpty {
+                    MediaRow(title: "More Like This", items: similar)
+                }
             }
             .padding(.bottom, 32)
         }
@@ -343,7 +350,9 @@ struct ItemDetailView: View {
         guard let itemID = item.id else { return }
 
         // Fetch the full item for media sources and complete metadata.
+        async let related: Void = loadSimilar(itemID: itemID)
         fullItem = try? await jellyfin.send(Paths.getItem(itemID: itemID, userID: jellyfin.userID))
+        await related
 
         if displayed.type == .series {
             if let result = try? await jellyfin.send(Paths.getSeasons(seriesID: itemID)) {
@@ -356,6 +365,21 @@ struct ItemDetailView: View {
                     ?? seasons.first?.id
             }
         }
+    }
+
+    /// The server's own similarity match — genre, people, and studio overlap.
+    /// A failure here leaves the shelf out rather than surfacing an error: it
+    /// is an extra, and the page is complete without it.
+    private func loadSimilar(itemID: String) async {
+        var parameters = Paths.GetSimilarItemsParameters()
+        parameters.userID = jellyfin.userID
+        parameters.limit = 20
+
+        guard let result = try? await jellyfin.send(
+            Paths.getSimilarItems(itemID: itemID, parameters: parameters)
+        ) else { return }
+
+        similar = result.items ?? []
     }
 
     private func loadEpisodes() async {
