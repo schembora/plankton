@@ -2,13 +2,13 @@
 //  PlayerView.swift
 //  Plankton
 //
-//  Full-screen video playback via the native player.
+//  Full-screen video playback, through whichever engine the user picked.
 //
 
 import AVFAudio
-import AVKit
 import OSLog
 import SwiftUI
+import UIKit
 
 private let logger = Logger(subsystem: "com.schembor.Plankton", category: "Player")
 
@@ -18,6 +18,7 @@ struct PlayerContainerView: View {
     let playback: PlaybackItem
 
     @Environment(JellyfinService.self) private var jellyfin
+    @Environment(PlaybackSettings.self) private var settings
     @Environment(\.dismiss) private var dismiss
     @State private var errorMessage: String?
 
@@ -36,7 +37,7 @@ struct PlayerContainerView: View {
     }
 
     var body: some View {
-        PlayerView(playback: playback, reporter: reporter) { message in
+        PlayerView(playback: playback, engineKind: settings.engine, reporter: reporter) { message in
             errorMessage = message
         }
         .ignoresSafeArea()
@@ -48,11 +49,15 @@ struct PlayerContainerView: View {
     }
 }
 
+/// The engine owns its own view controller, so this representable is typed to
+/// the base class rather than to AVKit's — the whole point is that what draws
+/// the video can change underneath it.
 struct PlayerView: UIViewControllerRepresentable {
 
     @Environment(ImageCache.self) private var images
 
     let playback: PlaybackItem
+    let engineKind: PlaybackEngineKind
     let reporter: PlaybackReporter?
     let onError: (String) -> Void
 
@@ -60,48 +65,20 @@ struct PlayerView: UIViewControllerRepresentable {
         Coordinator(reporter: reporter, onError: onError)
     }
 
-    func makeUIViewController(context: Context) -> AVPlayerViewController {
-        logger.info("Starting playback: \(playback.url.absoluteString, privacy: .private)")
+    func makeUIViewController(context: Context) -> UIViewController {
+        logger.info("Starting playback via \(engineKind.rawValue): \(playback.url.absoluteString, privacy: .private)")
         configureAudioSession()
 
-        let item = AVPlayerItem(url: playback.url)
-        context.coordinator.observe(item)
-
-        let controller = AVPlayerViewController()
-        let player = AVPlayer(playerItem: item)
-        controller.player = player
-
-        // Picture in Picture: show the PiP button and start PiP automatically
-        // when the user leaves the app during fullscreen playback.
-        controller.allowsPictureInPicturePlayback = true
-        controller.canStartPictureInPictureAutomaticallyFromInline = true
-
-        // NowPlayingCenter fills the lock screen instead: AVKit would publish
-        // the stream's own metadata, which for Jellyfin HLS is nothing at all.
-        controller.updatesNowPlayingInfoCenter = false
-        if let metadata = playback.metadata {
-            context.coordinator.beginNowPlaying(metadata, for: player, artwork: images)
-        }
-
-        // Resume where the server says we left off. Seeking before play avoids
-        // a visible jump from the opening frames.
-        if let startTicks = playback.startTicks {
-            let start = PlaybackReporter.seconds(fromTicks: startTicks)
-            player.seek(to: CMTime(seconds: start, preferredTimescale: 600))
-        }
-
-        context.coordinator.beginReporting(for: player)
-        player.play()
+        let engine = engineKind.makeEngine(url: playback.url)
+        let controller = engine.makeViewController()
+        context.coordinator.start(engine, playback: playback, artwork: images)
         return controller
     }
 
-    func updateUIViewController(_ uiViewController: AVPlayerViewController, context: Context) {}
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
 
-    static func dismantleUIViewController(_ uiViewController: AVPlayerViewController, coordinator: Coordinator) {
-        coordinator.endReporting(for: uiViewController.player)
-        coordinator.endNowPlaying()
-        uiViewController.player?.pause()
-        uiViewController.player = nil
+    static func dismantleUIViewController(_ uiViewController: UIViewController, coordinator: Coordinator) {
+        coordinator.stop()
     }
 
     /// `.playback` keeps audio on the speaker even with the silent switch on,
@@ -121,66 +98,65 @@ struct PlayerView: UIViewControllerRepresentable {
         private let reporter: PlaybackReporter?
         private let onError: (String) -> Void
         private let nowPlaying = NowPlayingCenter()
-        private var observation: NSKeyValueObservation?
-        private var timeObserver: Any?
+        private var engine: (any PlaybackEngine)?
 
         init(reporter: PlaybackReporter?, onError: @escaping (String) -> Void) {
             self.reporter = reporter
             self.onError = onError
         }
 
-        func beginNowPlaying(_ metadata: NowPlayingMetadata, for player: AVPlayer, artwork cache: ImageCache) {
-            nowPlaying.start(metadata, for: player, artwork: cache)
+        /// Order matters: the resume seek has to be issued before the start
+        /// report reads a position off the engine, or the server is told
+        /// playback began at zero.
+        func start(_ engine: any PlaybackEngine, playback: PlaybackItem, artwork cache: ImageCache) {
+            self.engine = engine
+
+            engine.observeFailure { [onError] message in
+                onError(message)
+            }
+
+            if let metadata = playback.metadata {
+                nowPlaying.start(metadata, for: engine, artwork: cache)
+            }
+
+            // Resume where the server says we left off. Seeking before play
+            // avoids a visible jump from the opening frames.
+            if let startTicks = playback.startTicks {
+                engine.seek(to: PlaybackReporter.seconds(fromTicks: startTicks))
+            }
+
+            beginReporting(with: engine)
+            engine.play()
         }
 
-        func endNowPlaying() {
+        func stop() {
+            endReporting()
             nowPlaying.stop()
+            engine?.tearDown()
+            engine = nil
         }
 
         /// Announces the play and then heartbeats position on an interval, so
         /// the server's resume point tracks along even if the app is killed
         /// without a clean stop.
-        func beginReporting(for player: AVPlayer) {
+        private func beginReporting(with engine: any PlaybackEngine) {
             guard let reporter else { return }
 
-            let start = player.currentTime().seconds
-            Task { await reporter.started(atSeconds: start.isFinite ? start : 0) }
+            let start = engine.currentTime
+            Task { await reporter.started(atSeconds: start) }
 
-            let interval = CMTime(seconds: PlaybackReporter.progressInterval, preferredTimescale: 1)
-            timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak player] time in
-                guard time.seconds.isFinite else { return }
-                let isPaused = (player?.timeControlStatus ?? .paused) != .playing
-                Task { await reporter.progress(atSeconds: time.seconds, isPaused: isPaused) }
+            engine.observeTime(interval: PlaybackReporter.progressInterval) { [weak engine] seconds in
+                let isPaused = engine?.isPlaying != true
+                Task { await reporter.progress(atSeconds: seconds, isPaused: isPaused) }
             }
         }
 
-        func endReporting(for player: AVPlayer?) {
-            if let timeObserver {
-                player?.removeTimeObserver(timeObserver)
-                self.timeObserver = nil
-            }
+        private func endReporting() {
             guard let reporter else { return }
 
-            // Captured now: the player is torn down before the task runs.
-            let position = player?.currentTime().seconds ?? 0
-            Task { await reporter.stopped(atSeconds: position.isFinite ? position : 0) }
-        }
-
-        func observe(_ item: AVPlayerItem) {
-            observation = item.observe(\.status, options: [.new]) { [onError] item, _ in
-                guard item.status == .failed else { return }
-
-                let message = item.error?.localizedDescription ?? "Unknown playback error"
-                logger.error("Playback failed: \(message)")
-
-                if let errorLog = item.errorLog() {
-                    for event in errorLog.events {
-                        logger.error("HLS: \(event.errorStatusCode) \(event.errorComment ?? "-") \(event.uri ?? "-", privacy: .private)")
-                    }
-                }
-
-                Task { @MainActor in onError(message) }
-            }
+            // Captured now: the engine is torn down before the task runs.
+            let position = engine?.currentTime ?? 0
+            Task { await reporter.stopped(atSeconds: position) }
         }
     }
 }

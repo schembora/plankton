@@ -11,6 +11,7 @@ struct SettingsView: View {
 
     @Environment(JellyfinService.self) private var jellyfin
     @Environment(ImageCache.self) private var images
+    @Environment(PlaybackSettings.self) private var playback
 
     @State private var isSigningOut = false
 
@@ -21,8 +22,26 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        @Bindable var playback = playback
+
+        return NavigationStack {
             List {
+                // A picker of one is just a label, so it stays out until there
+                // is something to pick between.
+                if PlaybackEngineKind.available.count > 1 {
+                    Section {
+                        Picker("Video", selection: $playback.engine) {
+                            ForEach(PlaybackEngineKind.available) { kind in
+                                Text(kind.title).tag(kind)
+                            }
+                        }
+                    } header: {
+                        Text("Playback")
+                    } footer: {
+                        Text(playback.engine.explanation)
+                    }
+                }
+
                 Section("Server") {
                     LabeledContent("Name", value: jellyfin.serverName ?? "Unknown")
                     LabeledContent("Address", value: jellyfin.serverURL?.absoluteString ?? "Unknown")

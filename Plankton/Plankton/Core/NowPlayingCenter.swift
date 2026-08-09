@@ -5,7 +5,7 @@
 //  Publishes what's playing to the lock screen and Control Center.
 //
 
-import AVFoundation
+import Foundation
 import JellyfinAPI
 import MediaPlayer
 import OSLog
@@ -46,15 +46,15 @@ extension NowPlayingMetadata {
     }
 }
 
-/// Mirrors an `AVPlayer` into `MPNowPlayingInfoCenter` and wires the lock
+/// Mirrors a `PlaybackEngine` into `MPNowPlayingInfoCenter` and wires the lock
 /// screen's transport controls back to it.
 ///
 /// `AVPlayerViewController` can populate the info center itself, but only from
 /// metadata embedded in the asset — a Jellyfin HLS stream carries no title or
 /// artwork, so the lock screen would offer bare transport controls with nothing
 /// to identify what's playing. Its automatic updating is switched off in
-/// `PlayerView`, because it replaces the whole info dictionary and would drop
-/// the fields filled in here.
+/// `AVPlaybackEngine`, because it replaces the whole info dictionary and would
+/// drop the fields filled in here.
 @MainActor
 final class NowPlayingCenter {
 
@@ -68,13 +68,12 @@ final class NowPlayingCenter {
     /// so each value has one source of truth.
     private var staticInfo: [String: Any] = [:]
 
-    private weak var player: AVPlayer?
-    private var observations: [NSKeyValueObservation] = []
+    private weak var engine: (any PlaybackEngine)?
     private var commandTargets: [(command: MPRemoteCommand, target: Any)] = []
     private var artworkTask: Task<Void, Never>?
 
-    func start(_ metadata: NowPlayingMetadata, for player: AVPlayer, artwork cache: ImageCache) {
-        self.player = player
+    func start(_ metadata: NowPlayingMetadata, for engine: any PlaybackEngine, artwork cache: ImageCache) {
+        self.engine = engine
 
         staticInfo[MPMediaItemPropertyTitle] = metadata.title
         if let subtitle = metadata.subtitle {
@@ -84,8 +83,8 @@ final class NowPlayingCenter {
         staticInfo[MPNowPlayingInfoPropertyIsLiveStream] = false
 
         publish()
-        observe(player)
-        registerCommands(for: player)
+        observe(engine)
+        registerCommands(for: engine)
         loadArtwork(metadata.artwork, from: cache)
     }
 
@@ -94,7 +93,6 @@ final class NowPlayingCenter {
     func stop() {
         artworkTask?.cancel()
         artworkTask = nil
-        observations.removeAll()
 
         for (command, target) in commandTargets {
             command.removeTarget(target)
@@ -103,7 +101,7 @@ final class NowPlayingCenter {
         commandTargets.removeAll()
 
         staticInfo.removeAll()
-        player = nil
+        engine = nil
         infoCenter.nowPlayingInfo = nil
     }
 
@@ -111,16 +109,18 @@ final class NowPlayingCenter {
     /// value — the system extrapolates between updates, so this only needs
     /// calling when playback state changes, not on every frame.
     private func publish() {
-        guard let player else { return }
+        guard let engine else { return }
 
         var info = staticInfo
-        let elapsed = player.currentTime().seconds
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed.isFinite ? elapsed : 0
-        info[MPNowPlayingInfoPropertyPlaybackRate] = player.rate
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = engine.currentTime
+        // Derived from `isPlaying` rather than read off the player: a stalled
+        // or seeking AVPlayer still reports a rate of 1, which would leave the
+        // lock screen's extrapolated clock running ahead of the video.
+        info[MPNowPlayingInfoPropertyPlaybackRate] = engine.isPlaying ? 1.0 : 0.0
 
         // Indefinite until the HLS playlist loads; publishing a NaN duration
         // leaves the lock screen scrubber pinned at zero for the whole item.
-        if let duration = player.currentItem?.duration.seconds, duration.isFinite {
+        if let duration = engine.duration {
             info[MPMediaItemPropertyPlaybackDuration] = duration
         }
 
@@ -129,50 +129,45 @@ final class NowPlayingCenter {
 
     /// Play/pause moves the clock the lock screen extrapolates from, and an
     /// HLS duration resolves after playback starts — both have to be republished.
-    private func observe(_ player: AVPlayer) {
-        observations = [
-            player.observe(\.timeControlStatus) { [weak self] _, _ in
-                Task { @MainActor in self?.publish() }
-            },
-            player.observe(\.currentItem?.duration) { [weak self] _, _ in
-                Task { @MainActor in self?.publish() }
-            },
-        ]
+    private func observe(_ engine: any PlaybackEngine) {
+        engine.observeState { [weak self] in
+            self?.publish()
+        }
     }
 
-    private func registerCommands(for player: AVPlayer) {
+    private func registerCommands(for engine: any PlaybackEngine) {
         commandCenter.skipForwardCommand.preferredIntervals = [NSNumber(value: Self.skipInterval)]
         commandCenter.skipBackwardCommand.preferredIntervals = [NSNumber(value: Self.skipInterval)]
 
         add(commandCenter.playCommand) { [weak self] _ in
-            player.play()
+            engine.play()
             self?.publish()
             return .success
         }
 
         add(commandCenter.pauseCommand) { [weak self] _ in
-            player.pause()
+            engine.pause()
             self?.publish()
             return .success
         }
 
         add(commandCenter.togglePlayPauseCommand) { [weak self] _ in
-            if player.timeControlStatus == .paused {
-                player.play()
+            if engine.isPlaying {
+                engine.pause()
             } else {
-                player.pause()
+                engine.play()
             }
             self?.publish()
             return .success
         }
 
         add(commandCenter.skipForwardCommand) { [weak self] _ in
-            self?.seek(to: player.currentTime().seconds + Self.skipInterval)
+            self?.seek(to: engine.currentTime + Self.skipInterval)
             return .success
         }
 
         add(commandCenter.skipBackwardCommand) { [weak self] _ in
-            self?.seek(to: player.currentTime().seconds - Self.skipInterval)
+            self?.seek(to: engine.currentTime - Self.skipInterval)
             return .success
         }
 
@@ -198,13 +193,10 @@ final class NowPlayingCenter {
         commandTargets.append((command, target))
     }
 
+    /// The engine republishes through `observeState` once the seek lands, so
+    /// there's nothing to do here but ask.
     private func seek(to seconds: TimeInterval) {
-        guard let player else { return }
-
-        let target = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
-        player.seek(to: target) { [weak self] _ in
-            Task { @MainActor in self?.publish() }
-        }
+        engine?.seek(to: seconds)
     }
 
     /// Artwork lands after everything else: it may need a round trip, and the
