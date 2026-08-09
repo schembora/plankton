@@ -77,7 +77,26 @@ final class AVPlaybackEngine: PlaybackEngine {
 
     // MARK: - Presentation
 
-    func makeViewController() -> UIViewController {
+    /// AVKit draws the scrubber, transport, track picker and PiP button.
+    let providesControls = true
+
+    /// Left empty on purpose: AVKit's own subtitle menu already reads the
+    /// asset's media selection groups, and a second picker over the top of it
+    /// would be two controls fighting over one setting.
+    let subtitleTracks: [PlaybackTrack] = []
+    let selectedSubtitleTrack: PlaybackTrack.ID? = nil
+
+    func selectSubtitleTrack(_ id: PlaybackTrack.ID?) {}
+
+    /// AVKit sizes subtitles from the system's captions settings, which is
+    /// where a user of this engine would expect to change them.
+    func setSubtitleScale(_ scale: Double) {}
+
+    func makeSurface() -> PlaybackSurface {
+        .controller(makeViewController())
+    }
+
+    private func makeViewController() -> UIViewController {
         let controller = AVPlayerViewController()
         controller.player = player
 

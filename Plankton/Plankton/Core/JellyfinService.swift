@@ -12,6 +12,20 @@ import Network
 import Observation
 import UIKit
 
+/// A resolved playable source, and which of the two shapes the server gave us.
+///
+/// The distinction matters beyond playback: an original container is an
+/// ordinary file that downloads with a plain transfer, where an HLS stream is a
+/// playlist that only `AVAssetDownloadURLSession` knows how to pull down.
+struct PlaybackSource {
+
+    let url: URL
+
+    /// True when this is the original file, false when it's an HLS stream the
+    /// server is transcoding.
+    let isDirectFile: Bool
+}
+
 @Observable
 final class JellyfinService {
 
@@ -194,29 +208,15 @@ final class JellyfinService {
     }
 
     /// Resolves the best playable URL for an item by negotiating with the server via
-    /// PlaybackInfo and an AVPlayer device profile. Returns a transcoded HLS URL for
-    /// formats AVPlayer can't play natively (e.g. MKV), or a direct stream otherwise.
-    func playbackURL(for item: BaseItemDto) async -> URL? {
+    /// PlaybackInfo and a device profile describing what the chosen engine can decode.
+    ///
+    /// The profile is what decides whether the server hands over the original file or
+    /// re-encodes it, so it has to describe the actual decoder — telling the server
+    /// about AVPlayer while mpv does the playing means transcoding that nothing needed.
+    func playbackSource(for item: BaseItemDto, engine: PlaybackEngineKind) async -> PlaybackSource? {
         guard let client, let itemID = item.id, let userID else { return nil }
 
-        var profile = DeviceProfile()
-        profile.name = "Plankton AVPlayer"
-        profile.maxStreamingBitrate = 20_000_000
-        profile.directPlayProfiles = [
-            DirectPlayProfile(audioCodec: "aac,ac3,eac3,mp3,alac", container: "mp4,m4v,mov", type: .video, videoCodec: "h264,hevc"),
-        ]
-        var hlsProfile = TranscodingProfile()
-        hlsProfile.protocol = .hls
-        hlsProfile.container = "fmp4"
-        hlsProfile.type = .video
-        hlsProfile.videoCodec = "h264"
-        hlsProfile.audioCodec = "aac"
-        hlsProfile.maxAudioChannels = "2"
-        hlsProfile.enableSubtitlesInManifest = true
-        profile.transcodingProfiles = [hlsProfile]
-        profile.subtitleProfiles = [
-            SubtitleProfile(format: "vtt", method: .hls),
-        ]
+        let profile = DeviceProfile.plankton(for: engine)
 
         var body = PlaybackInfoDto()
         body.userID = userID
@@ -229,25 +229,29 @@ final class JellyfinService {
               let mediaSource = info.mediaSources?.first
         else { return nil }
 
-        // Transcoded HLS — the URL already carries the play session and API key.
-        if let transcodingURL = mediaSource.transcodingURL {
-            var url = transcodingURL
-            // Ask the server to list all subtitle tracks in the HLS manifest;
-            // AVPlayer shows them in its native subtitle picker.
-            if let subtitleIndex = Self.manifestSubtitleIndex(for: mediaSource) {
-                url += "&SubtitleMethod=Hls&SubtitleStreamIndex=\(subtitleIndex)"
-            }
-            return client.url(path: url)
-        }
-
-        // Direct play of a natively supported file.
+        // Direct play first: when the server says the file is playable as-is,
+        // taking the transcode instead would burn its CPU for nothing.
         if mediaSource.isSupportsDirectPlay == true, let container = mediaSource.container {
             var streamParameters = Paths.GetVideoStreamByContainerParameters()
             streamParameters.isStatic = true
             streamParameters.mediaSourceID = mediaSource.id ?? itemID
             streamParameters.deviceID = deviceID
             let request = Paths.getVideoStreamByContainer(itemID: itemID, container: container, parameters: streamParameters)
-            return client.url(with: request, queryAPIKey: true)
+            guard let url = client.url(with: request, queryAPIKey: true) else { return nil }
+            return PlaybackSource(url: url, isDirectFile: true)
+        }
+
+        // Transcoded HLS — the URL already carries the play session and API key.
+        if let transcodingURL = mediaSource.transcodingURL {
+            var url = transcodingURL
+            // Ask the server to list all subtitle tracks in the HLS manifest;
+            // AVPlayer shows them in its native subtitle picker. mpv reads
+            // subtitles out of the container itself and needs no such hint.
+            if engine == .server, let subtitleIndex = Self.manifestSubtitleIndex(for: mediaSource) {
+                url += "&SubtitleMethod=Hls&SubtitleStreamIndex=\(subtitleIndex)"
+            }
+            guard let resolved = client.url(path: url) else { return nil }
+            return PlaybackSource(url: resolved, isDirectFile: false)
         }
 
         return nil

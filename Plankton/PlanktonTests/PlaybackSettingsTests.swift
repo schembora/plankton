@@ -63,6 +63,57 @@ struct PlaybackSettingsTests {
         #expect(PlaybackSettings(defaults: defaults).engine == .server)
     }
 
+    // MARK: - Subtitle scale
+
+    @Test func subtitleScaleDefaultsToUnscaled() {
+        #expect(PlaybackSettings(defaults: makeDefaults()).subtitleScale == 1)
+    }
+
+    @Test func subtitleScaleSurvivesRelaunch() {
+        let defaults = makeDefaults()
+
+        let settings = PlaybackSettings(defaults: defaults)
+        settings.subtitleScale = 0.6
+
+        #expect(PlaybackSettings(defaults: defaults).subtitleScale == 0.6)
+    }
+
+    /// `double(forKey:)` answers 0 for a key never written, which would
+    /// otherwise render subtitles at zero size.
+    @Test func unwrittenSubtitleScaleIsNotTakenAsZero() {
+        let defaults = makeDefaults()
+        #expect(defaults.double(forKey: "subtitleScale") == 0)
+        #expect(PlaybackSettings(defaults: defaults).subtitleScale == 1)
+    }
+
+    @Test(arguments: [0.0, -1.0, 12.0])
+    func outOfRangeSubtitleScaleFallsBack(_ stored: Double) {
+        let defaults = makeDefaults()
+        defaults.set(stored, forKey: "subtitleScale")
+
+        #expect(PlaybackSettings(defaults: defaults).subtitleScale == 1)
+    }
+
+    @Test func everyPresetIsWithinTheAcceptedRange() {
+        for preset in SubtitleScale.allCases {
+            #expect(PlaybackSettings.subtitleScaleRange.contains(preset.rawValue))
+        }
+    }
+
+    @Test func presetsRoundTripThroughNearest() {
+        for preset in SubtitleScale.allCases {
+            #expect(SubtitleScale.nearest(to: preset.rawValue) == preset)
+        }
+    }
+
+    @Test func nearestSnapsAnArbitraryScaleToAPreset() {
+        #expect(SubtitleScale.nearest(to: 0.62) == .small)
+        #expect(SubtitleScale.nearest(to: 1.4) == .larger)
+        #expect(SubtitleScale.nearest(to: 100) == .larger)
+    }
+
+    // MARK: - Engines
+
     /// Anything the Settings picker can offer has to survive a relaunch —
     /// otherwise selecting it would silently revert on next launch.
     @Test func everyAvailableKindSurvivesRelaunch() {

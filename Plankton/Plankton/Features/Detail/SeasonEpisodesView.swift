@@ -17,6 +17,7 @@ struct SeasonEpisodesView: View {
 
     @Environment(JellyfinService.self) private var jellyfin
     @Environment(DownloadService.self) private var downloads
+    @Environment(PlaybackSettings.self) private var playback
 
     let title: String
     let episodes: [BaseItemDto]
@@ -31,7 +32,7 @@ struct SeasonEpisodesView: View {
                         EpisodeDetailView(episode: episode)
                     } label: {
                         EpisodeRow(episode: episode) {
-                            launcher.play(episode, jellyfin: jellyfin, downloads: downloads)
+                            launcher.play(episode, jellyfin: jellyfin, downloads: downloads, engine: playback.engine)
                         }
                     }
                     .buttonStyle(.plain)

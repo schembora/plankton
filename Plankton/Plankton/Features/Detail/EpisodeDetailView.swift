@@ -18,6 +18,7 @@ struct EpisodeDetailView: View {
 
     @Environment(JellyfinService.self) private var jellyfin
     @Environment(DownloadService.self) private var downloads
+    @Environment(PlaybackSettings.self) private var playback
 
     /// The episode the page opened on. `current` takes over once loading
     /// starts, and again whenever the strip below moves to a sibling.
@@ -141,7 +142,7 @@ struct EpisodeDetailView: View {
 
     private var playButton: some View {
         Button {
-            launcher.play(displayed, jellyfin: jellyfin, downloads: downloads)
+            launcher.play(displayed, jellyfin: jellyfin, downloads: downloads, engine: playback.engine)
         } label: {
             Label(playLabel, systemImage: "play.fill")
                 .frame(maxWidth: .infinity)

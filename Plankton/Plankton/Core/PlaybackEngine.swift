@@ -15,7 +15,7 @@ import UIKit
 /// is where the startup latency comes from. A decoder bundled into the app
 /// plays the original file untouched. The trade is real enough in both
 /// directions that it belongs to the user rather than being picked for them.
-enum PlaybackEngineKind: String, CaseIterable, Identifiable {
+enum PlaybackEngineKind: String, Codable, CaseIterable, Identifiable {
 
     /// AVPlayer over the server's HLS stream. Picture in Picture, AirPlay and
     /// the native track picker come free; the server pays in CPU and latency.
@@ -42,21 +42,47 @@ enum PlaybackEngineKind: String, CaseIterable, Identifiable {
         }
     }
 
-    /// The kinds Settings offers. `direct` is listed ahead of its engine on
-    /// purpose, so the choice is visible while the decoder is being built —
-    /// picking it currently still plays through AVPlayer.
+    /// The kinds Settings offers.
     static var available: [PlaybackEngineKind] { [.server, .direct] }
 
-    /// Builds the engine for this kind.
-    ///
-    /// `direct` falls through to the server engine for now; this is the one
-    /// line that changes when the bundled decoder arrives.
     @MainActor
     func makeEngine(url: URL) -> any PlaybackEngine {
         switch self {
-        case .server, .direct: AVPlaybackEngine(url: url)
+        case .server: AVPlaybackEngine(url: url)
+        case .direct: MPVPlaybackEngine(url: url)
         }
     }
+}
+
+/// One selectable track in the file being played.
+struct PlaybackTrack: Identifiable, Hashable {
+
+    /// The engine's own identifier for the track, not an index into any list.
+    let id: Int
+    let title: String?
+    let language: String?
+
+    /// What the picker shows. Files routinely carry a title or a language but
+    /// not both, so this falls through before naming the track by number.
+    var displayName: String {
+        switch (title, language) {
+        case let (title?, language?): "\(title) (\(language.uppercased()))"
+        case let (title?, nil): title
+        case let (nil, language?): language.uppercased()
+        case (nil, nil): "Track \(id)"
+        }
+    }
+}
+
+/// What an engine draws into.
+///
+/// mpv needs nothing but a layer-backed view, and giving it a view controller
+/// makes SwiftUI reparent the whole hierarchy — UIKit warns about that and the
+/// picture can break. AVKit's player has to stay a controller: its transport,
+/// PiP and fullscreen behaviour all live there.
+enum PlaybackSurface {
+    case view(UIView)
+    case controller(UIViewController)
 }
 
 /// What playback looks like to the rest of the app: a clock, a play/pause
@@ -85,10 +111,31 @@ protocol PlaybackEngine: AnyObject {
     func pause()
     func seek(to seconds: TimeInterval)
 
-    /// The video surface. Each engine brings its own: AVKit's controller has
-    /// transport controls, PiP and a track picker built in, where a bundled
-    /// decoder needs all three drawn by hand.
-    func makeViewController() -> UIViewController
+    /// Whether the engine's surface arrives with transport controls already on
+    /// it. AVKit's does; a decoder drawing into a bare layer has nothing, and
+    /// the app has to supply them.
+    var providesControls: Bool { get }
+
+    /// The video surface, built once. Each engine brings its own: AVKit's
+    /// controller has transport, PiP and a track picker built in, where a
+    /// bundled decoder needs all three drawn by hand.
+    func makeSurface() -> PlaybackSurface
+
+    /// Subtitle tracks in the open file, empty before it opens. Engines that
+    /// bring their own picker leave this empty — the app doesn't draw a second
+    /// one over the top of AVKit's.
+    var subtitleTracks: [PlaybackTrack] { get }
+
+    /// The showing subtitle track, or nil when subtitles are off.
+    var selectedSubtitleTrack: PlaybackTrack.ID? { get }
+
+    /// Shows a subtitle track, or turns subtitles off with nil.
+    func selectSubtitleTrack(_ id: PlaybackTrack.ID?)
+
+    /// Scales rendered subtitles, 1 being the engine's own size. Engines with
+    /// their own picker ignore it — AVKit takes subtitle sizing from the
+    /// system's accessibility settings instead.
+    func setSubtitleScale(_ scale: Double)
 
     /// Releases the decoder. Nothing is playable afterwards.
     func tearDown()
