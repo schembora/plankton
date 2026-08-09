@@ -60,6 +60,11 @@ final class MPVPlaybackEngine: PlaybackEngine {
         static let trackList = "track-list"
         static let subtitleTrack = "sid"
         static let subtitleScale = "sub-scale"
+
+        /// The size mpv believes its window is, as opposed to the layer's own.
+        /// The two disagreeing is what puts the picture in a corner.
+        static let osdWidth = "osd-dimensions/w"
+        static let osdHeight = "osd-dimensions/h"
     }
 
     /// One entry of mpv's `track-list`, which comes back as JSON when the
@@ -100,11 +105,13 @@ final class MPVPlaybackEngine: PlaybackEngine {
         // the server never re-encodes.
         setOption("hwdec", "videotoolbox")
 
-        // Hand HDR through to the display instead of tone-mapping it down to
-        // SDR, which is what made 4K HDR look flatter here than under AVKit.
-        // mpv can't change this once playback starts, so it goes in with the
-        // rest of the options.
-        setOption("target-colorspace-hint", "yes")
+        // HDR passthrough (`target-colorspace-hint`) is deliberately left off.
+        // Asking for a non-default colorspace makes MoltenVK set one on the
+        // layer from mpv's render thread, and UIKit raises on layer properties
+        // being touched off the main thread. The setter it uses is private, so
+        // it can't be funnelled to the main thread the way the EDR flag is.
+        // HDR content plays tone-mapped instead, which is the same trade other
+        // iOS mpv clients make.
 
         // Match the subtitle behaviour users get from other Jellyfin clients:
         // prefer the system language, fall back rather than showing nothing.
@@ -139,6 +146,30 @@ final class MPVPlaybackEngine: PlaybackEngine {
         }, Unmanaged.passUnretained(self).toOpaque())
 
         observeAppLifecycle()
+        observeGeometry()
+    }
+
+    /// Logs the layer's size next to mpv's own idea of its window after every
+    /// layout. When those two disagree the video is laid out for one size and
+    /// drawn into another, which is what a rotation leaving the picture in a
+    /// corner looks like.
+    private func observeGeometry() {
+        #if DEBUG
+        renderView.onLayout = { [weak self] renderSize, scale in
+            guard let self else { return }
+
+            let mpvWidth = self.double(Property.osdWidth)
+            let mpvHeight = self.double(Property.osdHeight)
+            // Info rather than debug: debug-level messages aren't captured by
+            // default, and this exists to be read.
+            logger.info(
+                """
+                geometry: layer \(Int(renderSize.width))x\(Int(renderSize.height)) @\(scale, format: .fixed(precision: 1))x \
+                | mpv \(Int(mpvWidth))x\(Int(mpvHeight))
+                """
+            )
+        }
+        #endif
     }
 
     /// MoltenVK can't present while the app is backgrounded, and coming back
@@ -271,11 +302,15 @@ final class MPVPlaybackEngine: PlaybackEngine {
         guard let handle else { return }
         self.handle = nil
 
-        // Stop new wake-ups, then let any drain already running finish before
-        // the handle it's holding is destroyed.
+        // Stop new wake-ups, then destroy on the event queue rather than here.
+        // Being a serial queue it already orders behind any drain still in
+        // flight, so the handle can't be freed mid-read — and unlike waiting
+        // for that here, it doesn't block the main thread inside a call that
+        // waits on mpv's own threads to finish.
         mpv_set_wakeup_callback(handle, nil, nil)
-        events.sync {}
-        mpv_terminate_destroy(handle)
+        events.async {
+            mpv_terminate_destroy(handle)
+        }
     }
 
     // MARK: - Observation
@@ -451,13 +486,18 @@ private final class MPVMetalLayer: CAMetalLayer {
     /// mpv flips this from its render thread, but the screen only actually
     /// enters EDR mode when the change is made on the main thread — off it,
     /// HDR content silently plays back tone-mapped.
+    ///
+    /// Dispatched rather than waited on: mpv's render thread must never block
+    /// on the main thread, which tears playback down and waits on mpv while
+    /// doing so. Blocking here deadlocks the two against each other. EDR
+    /// engaging a frame later is not something anyone can see.
     override var wantsExtendedDynamicRangeContent: Bool {
         get { super.wantsExtendedDynamicRangeContent }
         set {
             if Thread.isMainThread {
                 super.wantsExtendedDynamicRangeContent = newValue
             } else {
-                DispatchQueue.main.sync {
+                DispatchQueue.main.async {
                     super.wantsExtendedDynamicRangeContent = newValue
                 }
             }
@@ -472,6 +512,10 @@ private final class MPVMetalLayer: CAMetalLayer {
 /// that by hand left mpv rendering against a mis-scaled surface, which sized
 /// the subtitle overlay against the wrong resolution.
 private final class MPVRenderView: UIView {
+
+    /// Reports the render size and scale after each layout, so the engine can
+    /// hold them up against what mpv thinks its window is.
+    var onLayout: ((_ renderSize: CGSize, _ scale: CGFloat) -> Void)?
 
     override class var layerClass: AnyClass { MPVMetalLayer.self }
 
@@ -498,14 +542,32 @@ private final class MPVRenderView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+
+        // Bounds animate through a rotation, and mpv presents continuously into
+        // the layer while they do. Without this the picture tears and lands
+        // mid-animation, at a size neither orientation agrees with.
+        //
+        // `drawableSize` is deliberately left alone. MoltenVK assigns it while
+        // building a swapchain, on mpv's render thread; writing it from here as
+        // well raced that, and a render pass sized for one drawable would run
+        // against another. mpv reads bounds and scale instead, and MoltenVK
+        // stays the only writer.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         applyContentsScale()
+        CATransaction.commit()
+
+        // The size mpv derives for itself, which is not the drawable's: those
+        // are two different things now, and this is the one driving the resize.
+        let scale = layer.contentsScale
+        onLayout?(CGSize(width: bounds.width * scale, height: bounds.height * scale), scale)
     }
 
-    /// A `CAMetalLayer` sizes its drawable as bounds times `contentsScale`, and
-    /// mpv builds its swapchain the moment it's handed the layer — before the
-    /// view has a window, while UIKit still has the scale at 1. Left alone the
-    /// video renders at point resolution and Core Animation upscales it, which
-    /// is the difference between sharp and soft.
+    /// mpv renders at bounds times `contentsScale`, and builds its swapchain
+    /// the moment it's handed the layer — before the view has a window, while
+    /// UIKit still has the scale at 1. Left alone the video renders at point
+    /// resolution and Core Animation upscales it, which is the difference
+    /// between sharp and soft.
     ///
     /// `nativeScale` rather than `scale`: they differ on the models that render
     /// above panel resolution, and the panel's is what decides how many pixels

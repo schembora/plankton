@@ -614,10 +614,10 @@
 		};
 		AA11AA11AA11AA11AA11AA04 /* XCRemoteSwiftPackageReference "MPVKit" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/mpvkit/MPVKit";
+			repositoryURL = "https://github.com/schembora/MPVKit";
 			requirement = {
 				kind = exactVersion;
-				version = 1.0.0;
+				version = "1.0.0-resize.1";
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
