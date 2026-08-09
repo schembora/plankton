@@ -17,11 +17,16 @@ import JellyfinAPI
 /// a plain enum, so the coupling stays on this side of the line.
 extension DeviceProfile {
 
-    static func plankton(for engine: PlaybackEngineKind) -> DeviceProfile {
-        switch engine {
+    /// `maxBitrate` is nil when uncapped. Anything above it gets re-encoded, so
+    /// a cap is the one setting that can undo direct play — it's left off
+    /// unless the user asked for it.
+    static func plankton(for engine: PlaybackEngineKind, maxBitrate: Int? = nil) -> DeviceProfile {
+        var profile = switch engine {
         case .server: avPlayer
         case .direct: mpv
         }
+        profile.maxStreamingBitrate = maxBitrate
+        return profile
     }
 
     /// What AVPlayer can demux, which is very little — no Matroska at all, so
@@ -29,7 +34,6 @@ extension DeviceProfile {
     private static var avPlayer: DeviceProfile {
         var profile = DeviceProfile()
         profile.name = "Plankton AVPlayer"
-        profile.maxStreamingBitrate = 20_000_000
         profile.directPlayProfiles = [
             DirectPlayProfile(
                 audioCodec: "aac,ac3,eac3,mp3,alac",
@@ -61,10 +65,6 @@ extension DeviceProfile {
     private static var mpv: DeviceProfile {
         var profile = DeviceProfile()
         profile.name = "Plankton mpv"
-
-        // Without a re-encode there's no bitrate worth capping — the limit is
-        // the network, and mpv buffers against that itself.
-        profile.maxStreamingBitrate = 400_000_000
         profile.directPlayProfiles = [
             DirectPlayProfile(
                 audioCodec: "aac,ac3,eac3,dts,dtshd,truehd,flac,alac,opus,vorbis,mp3,mp2,pcm_s16le,pcm_s24le,wavpack",

@@ -112,6 +112,71 @@ struct PlaybackSettingsTests {
         #expect(SubtitleScale.nearest(to: 100) == .larger)
     }
 
+    // MARK: - Bitrate
+
+    /// Uncapped on Wi-Fi is what keeps direct play working; a cap below the
+    /// file's own bitrate is what makes the server transcode.
+    @Test func wiFiIsUncappedByDefault() {
+        let settings = PlaybackSettings(defaults: makeDefaults())
+
+        #expect(settings.maxBitrateWiFi == .unlimited)
+        #expect(settings.maxBitrate(expensive: false) == nil)
+    }
+
+    @Test func cellularIsCappedByDefault() {
+        let settings = PlaybackSettings(defaults: makeDefaults())
+
+        #expect(settings.maxBitrateCellular == .mbps8)
+        #expect(settings.maxBitrate(expensive: true) == 8_000_000)
+    }
+
+    @Test func eachNetworkResolvesToItsOwnLimit() {
+        let settings = PlaybackSettings(defaults: makeDefaults())
+        settings.maxBitrateWiFi = .mbps40
+        settings.maxBitrateCellular = .mbps2
+
+        #expect(settings.maxBitrate(expensive: false) == 40_000_000)
+        #expect(settings.maxBitrate(expensive: true) == 2_000_000)
+    }
+
+    /// Unlimited has to survive a relaunch as a real choice. It stores as 0,
+    /// which is also what an unwritten key reads back as.
+    @Test func explicitlyUncappedCellularIsNotMistakenForUnset() {
+        let defaults = makeDefaults()
+
+        let settings = PlaybackSettings(defaults: defaults)
+        settings.maxBitrateCellular = .unlimited
+
+        let restored = PlaybackSettings(defaults: defaults)
+        #expect(restored.maxBitrateCellular == .unlimited)
+        #expect(restored.maxBitrate(expensive: true) == nil)
+    }
+
+    @Test func limitsSurviveRelaunch() {
+        let defaults = makeDefaults()
+
+        let settings = PlaybackSettings(defaults: defaults)
+        settings.maxBitrateWiFi = .mbps80
+        settings.maxBitrateCellular = .mbps4
+
+        let restored = PlaybackSettings(defaults: defaults)
+        #expect(restored.maxBitrateWiFi == .mbps80)
+        #expect(restored.maxBitrateCellular == .mbps4)
+    }
+
+    @Test func unrecognisedLimitFallsBackToTheDefault() {
+        let defaults = makeDefaults()
+        defaults.set(7_777, forKey: "maxBitrateWiFi")
+
+        #expect(PlaybackSettings(defaults: defaults).maxBitrateWiFi == .unlimited)
+    }
+
+    @Test func onlyUnlimitedResolvesToNoCap() {
+        for limit in BitrateLimit.allCases {
+            #expect((limit.bitsPerSecond == nil) == (limit == .unlimited))
+        }
+    }
+
     // MARK: - Engines
 
     /// Anything the Settings picker can offer has to survive a relaunch —

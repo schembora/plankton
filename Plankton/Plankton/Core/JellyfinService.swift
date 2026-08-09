@@ -53,6 +53,11 @@ final class JellyfinService {
     /// app stays open in offline mode and downloaded media remains playable.
     private(set) var isOffline = false
 
+    /// True on cellular or a personal hotspot. Drives which bitrate cap
+    /// applies: `isExpensive` rather than a check for the cellular interface,
+    /// since a hotspot is someone's cellular data too.
+    private(set) var isOnExpensiveNetwork = false
+
     /// The server chosen on the connect screen, before sign-in completes.
     private(set) var pendingServerURL: URL?
     private(set) var pendingServerName: String?
@@ -213,14 +218,20 @@ final class JellyfinService {
     /// The profile is what decides whether the server hands over the original file or
     /// re-encodes it, so it has to describe the actual decoder — telling the server
     /// about AVPlayer while mpv does the playing means transcoding that nothing needed.
-    func playbackSource(for item: BaseItemDto, engine: PlaybackEngineKind) async -> PlaybackSource? {
+    func playbackSource(
+        for item: BaseItemDto,
+        engine: PlaybackEngineKind,
+        maxBitrate: Int? = nil
+    ) async -> PlaybackSource? {
         guard let client, let itemID = item.id, let userID else { return nil }
-
-        let profile = DeviceProfile.plankton(for: engine)
 
         var body = PlaybackInfoDto()
         body.userID = userID
-        body.deviceProfile = profile
+        body.deviceProfile = DeviceProfile.plankton(for: engine, maxBitrate: maxBitrate)
+
+        // Also set per-session: the profile field describes what the device can
+        // take, where this is what it wants right now. Servers honour this one.
+        body.maxStreamingBitrate = maxBitrate
 
         var parameters = Paths.GetPostedPlaybackInfoParameters()
         parameters.userID = userID
@@ -405,6 +416,9 @@ final class JellyfinService {
     /// browsing resumes without relaunching the app.
     private func startMonitoringConnectivity() {
         pathMonitor.pathUpdateHandler = { [weak self] path in
+            // Delivered on the main queue, per `start(queue:)` below.
+            self?.isOnExpensiveNetwork = path.isExpensive
+
             guard path.status == .satisfied else { return }
             Task { await self?.revalidateIfOffline() }
         }

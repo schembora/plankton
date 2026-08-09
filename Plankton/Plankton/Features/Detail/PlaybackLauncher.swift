@@ -27,8 +27,9 @@ final class PlaybackLauncher {
         _ item: BaseItemDto,
         jellyfin: JellyfinService,
         downloads: DownloadService,
-        engine: PlaybackEngineKind
+        settings: PlaybackSettings
     ) {
+        let engine = settings.engine
         // Prefer the downloaded copy when there is one — instant and offline-capable.
         if let itemID = item.id, let localURL = downloads.localURL(forItemID: itemID) {
             playback = PlaybackItem(
@@ -48,7 +49,13 @@ final class PlaybackLauncher {
         isPreparing = true
 
         Task {
-            let source = await jellyfin.playbackSource(for: item, engine: engine)
+            let source = await jellyfin.playbackSource(
+                for: item,
+                engine: engine,
+                // Resolved per play rather than held: the phone can change
+                // networks between one episode and the next.
+                maxBitrate: settings.maxBitrate(expensive: jellyfin.isOnExpensiveNetwork)
+            )
             isPreparing = false
 
             if let source {

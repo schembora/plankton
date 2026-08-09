@@ -323,7 +323,7 @@ struct ItemDetailView: View {
     // MARK: - Playback & URLs
 
     private func play(_ item: BaseItemDto) {
-        launcher.play(item, jellyfin: jellyfin, downloads: downloads, engine: playback.engine)
+        launcher.play(item, jellyfin: jellyfin, downloads: downloads, settings: playback)
     }
 
 }

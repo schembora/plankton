@@ -245,7 +245,13 @@ final class DownloadService: NSObject {
         upsertRecord(for: item)
         failures.remove(itemID)
 
-        guard let source = await jellyfin.playbackSource(for: item, engine: settings.engine) else {
+        let source = await jellyfin.playbackSource(
+            for: item,
+            engine: settings.engine,
+            maxBitrate: settings.maxBitrate(expensive: jellyfin.isOnExpensiveNetwork)
+        )
+
+        guard let source else {
             failures.insert(itemID)
             return
         }

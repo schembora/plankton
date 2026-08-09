@@ -32,7 +32,7 @@ struct SeasonEpisodesView: View {
                         EpisodeDetailView(episode: episode)
                     } label: {
                         EpisodeRow(episode: episode) {
-                            launcher.play(episode, jellyfin: jellyfin, downloads: downloads, engine: playback.engine)
+                            launcher.play(episode, jellyfin: jellyfin, downloads: downloads, settings: playback)
                         }
                     }
                     .buttonStyle(.plain)

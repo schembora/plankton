@@ -42,6 +42,27 @@ struct SettingsView: View {
                     }
                 }
 
+                Section {
+                    Picker("Wi-Fi", selection: $playback.maxBitrateWiFi) {
+                        ForEach(BitrateLimit.allCases) { limit in
+                            Text(limit.title).tag(limit)
+                        }
+                    }
+
+                    Picker("Cellular", selection: $playback.maxBitrateCellular) {
+                        ForEach(BitrateLimit.allCases) { limit in
+                            Text(limit.title).tag(limit)
+                        }
+                    }
+                } header: {
+                    Text("Maximum Bitrate")
+                } footer: {
+                    // Stated plainly because the intuition runs the other way:
+                    // this reads like a quality dial, and lowering it is what
+                    // makes the server start converting.
+                    Text("The server converts anything above the limit, which is slower to start. Use Maximum unless the connection can't keep up.")
+                }
+
                 Section("Server") {
                     LabeledContent("Name", value: jellyfin.serverName ?? "Unknown")
                     LabeledContent("Address", value: jellyfin.serverURL?.absoluteString ?? "Unknown")
