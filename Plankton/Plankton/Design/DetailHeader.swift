@@ -18,6 +18,11 @@ struct DetailHeader<Poster: View, Lead: View>: View {
     let metadata: String?
     let overview: String?
 
+    /// The source file's resolution, codec and bitrate. Kept off the main
+    /// details line and set smaller: it's reference information, not something
+    /// anyone scans a page for.
+    var mediaSummary: String?
+
     /// The community score, on its own line under the details.
     var rating: String?
 
@@ -52,6 +57,12 @@ struct DetailHeader<Poster: View, Lead: View>: View {
                     Text(metadata)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                }
+
+                if let mediaSummary {
+                    Text(mediaSummary)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
 
                 if let rating {
@@ -97,6 +108,7 @@ extension DetailHeader where Lead == EmptyView {
         title: String,
         metadata: String?,
         overview: String?,
+        mediaSummary: String? = nil,
         rating: String? = nil,
         ratingURL: URL? = nil,
         reservesDescriptionSpace: Bool = false,
@@ -106,6 +118,7 @@ extension DetailHeader where Lead == EmptyView {
             title: title,
             metadata: metadata,
             overview: overview,
+            mediaSummary: mediaSummary,
             rating: rating,
             ratingURL: ratingURL,
             reservesDescriptionSpace: reservesDescriptionSpace,

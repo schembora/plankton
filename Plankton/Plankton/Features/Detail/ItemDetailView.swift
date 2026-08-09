@@ -168,6 +168,8 @@ struct ItemDetailView: View {
             title: displayed.displayTitle,
             metadata: metadataLine,
             overview: displayed.overview,
+            // A series has no file of its own — its episodes do.
+            mediaSummary: isSeries ? nil : displayed.mediaSummary,
             rating: displayed.communityRatingText,
             ratingURL: displayed.imdbURL
         ) {

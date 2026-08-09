@@ -80,6 +80,7 @@ struct EpisodeDetailView: View {
                 airDate,
             ].metadataLine,
             overview: displayed.overview,
+            mediaSummary: displayed.mediaSummary,
             rating: displayed.communityRatingText,
             ratingURL: displayed.imdbURL,
             // Sliding between episodes would otherwise resize this block and
