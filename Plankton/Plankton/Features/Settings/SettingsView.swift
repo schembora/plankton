@@ -84,6 +84,10 @@ struct SettingsView: View {
 
                 Section("About") {
                     LabeledContent("Version", value: appVersion)
+
+                    NavigationLink("Acknowledgements") {
+                        AcknowledgementsView()
+                    }
                 }
             }
             .navigationTitle("Settings")
