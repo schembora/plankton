@@ -56,6 +56,7 @@ struct PlayerControls: View {
     private var isLive: Bool { session.isLive }
 
     @State private var isVisible = true
+    @State private var isShowingQueue = false
     @State private var hideTask: Task<Void, Never>?
 
     var body: some View {
@@ -79,8 +80,22 @@ struct PlayerControls: View {
                     VStack(spacing: 0) {
                         topBar
                         Spacer(minLength: 0)
-                        transport
-                        Spacer(minLength: 0)
+
+                        // The transport steps aside for the season rather than
+                        // stacking above it: on a phone in landscape there
+                        // isn't room for both, and browsing is what the strip
+                        // is open for.
+                        if !isShowingQueue {
+                            transport
+                            Spacer(minLength: 0)
+                        }
+
+                        if isShowingQueue {
+                            PlayerQueueStrip(session: session, onInteraction: scheduleHide)
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                                .padding(.bottom, 12)
+                        }
+
                         PlaybackTimeline(session: session) { isScrubbing in
                             // A drag holds the chrome open; letting go restarts
                             // the clock that hides it.
@@ -90,9 +105,23 @@ struct PlayerControls: View {
                                 scheduleHide()
                             }
                         }
+
+                        optionsBar
                     }
                 }
                 .padding(20)
+                // The controls cover the whole frame, so the catcher behind
+                // them never sees a tap while they're up. Taking them here
+                // instead: buttons win for their own frames, and everything
+                // else — the video showing between them — lands on this.
+                .contentShape(.rect)
+                .onTapGesture {
+                    if isShowingQueue {
+                        closeQueue()
+                    } else {
+                        toggle()
+                    }
+                }
                 .transition(.opacity)
                 // Player chrome is monochrome, the way AVKit's is. Control
                 // glyphs otherwise inherit the app's accent colour, which puts
@@ -172,6 +201,19 @@ struct PlayerControls: View {
                 nextInQueueButton
             }
 
+            if !isLive, session.queue.count > 1 {
+                queueStripButton
+            }
+        }
+    }
+
+    /// How it looks and sounds, rather than where to go next. Kept apart from
+    /// the top bar so navigation stays in one place and presentation in
+    /// another, and so neither row grows past a thumb's reach.
+    private var optionsBar: some View {
+        HStack(spacing: 12) {
+            Spacer(minLength: 0)
+
             // Nothing to choose between on a file with no subtitles.
             if !session.subtitleTracks.isEmpty {
                 subtitleMenu
@@ -179,6 +221,7 @@ struct PlayerControls: View {
 
             fillMenu
         }
+        .padding(.top, 8)
     }
 
     /// How the picture sits on screen. Always offered: whether it's useful
@@ -198,6 +241,25 @@ struct PlayerControls: View {
                 .glassEffect(.clear.interactive(), in: .circle)
         }
         .accessibilityLabel("Video size")
+    }
+
+    /// Opens the rest of the season along the bottom. Next is the quick way
+    /// on; this is for picking somewhere else in it.
+    private var queueStripButton: some View {
+        Button {
+            if isShowingQueue {
+                closeQueue()
+            } else {
+                withAnimation(.easeInOut(duration: 0.25)) { isShowingQueue = true }
+                scheduleHide()
+            }
+        } label: {
+            Image(systemName: isShowingQueue ? "rectangle.stack.fill" : "rectangle.stack")
+                .font(.headline)
+                .padding(12)
+                .glassEffect(.clear.interactive(), in: .circle)
+        }
+        .accessibilityLabel(isShowingQueue ? "Hide episodes" : "Show episodes")
     }
 
     /// Plays the next episode without leaving the player. Reuses the engine,
@@ -379,6 +441,13 @@ struct PlayerControls: View {
         }
     }
 
+    /// Tapping away from an open season closes it rather than dismissing the
+    /// whole chrome: one tap should undo one thing.
+    private func closeQueue() {
+        withAnimation(.easeInOut(duration: 0.25)) { isShowingQueue = false }
+        scheduleHide()
+    }
+
     /// Controls stay up while paused or scrubbing — there's nothing to watch
     /// underneath them, and hiding would just cost another tap.
     private func scheduleHide() {
@@ -386,7 +455,11 @@ struct PlayerControls: View {
         hideTask = Task {
             try? await Task.sleep(for: autoHideDelay)
 
-            guard !Task.isCancelled, session.isPlaying, !session.isScrubbing else { return }
+            // Browsing the season counts as using the player: pulling the
+            // strip out from under a thumb mid-scroll would be its own bug.
+            guard !Task.isCancelled, session.isPlaying, !session.isScrubbing, !isShowingQueue else {
+                return
+            }
             isVisible = false
         }
     }
