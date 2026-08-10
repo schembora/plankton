@@ -138,11 +138,11 @@ struct LiveTVView: View {
         var parameters = Paths.GetLiveTvProgramsParameters()
         parameters.userID = jellyfin.userID
         parameters.channelIDs = channelIDs
-        // Back an hour, not from now: the grid starts at the half hour on or
-        // before the moment you looked, so anything that ended earlier in that
-        // slot still belongs on screen. Asking from now leaves a hole at the
-        // left of every row for most of each half hour.
-        parameters.minEndDate = now.addingTimeInterval(-60 * 60)
+        // Anchored to the grid's own left edge, not to now. Anything still
+        // running at the half hour belongs on screen, clipped to it. Asking
+        // from now instead drops exactly those programmes, which leaves a hole
+        // at the left of every row for most of each half hour.
+        parameters.minEndDate = GuideMetrics.gridStart(for: now)
         parameters.maxStartDate = now.addingTimeInterval(guideWindow)
         parameters.sortBy = [.startDate]
         // Without these the programmes come back with no image tags and no

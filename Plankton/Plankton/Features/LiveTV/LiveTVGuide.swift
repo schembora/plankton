@@ -34,12 +34,10 @@ struct LiveTVGuide: View {
         let programme: BaseItemDto
     }
 
-    /// The grid starts at the half hour on or before now, so the columns line
-    /// up with the times people expect rather than with the moment they looked.
-    private var start: Date {
-        let floored = (now.timeIntervalSinceReferenceDate / GuideMetrics.slot).rounded(.down) * GuideMetrics.slot
-        return Date(timeIntervalSinceReferenceDate: floored)
-    }
+    /// Where the grid's left edge sits: the half hour on or before now. A
+    /// programme already running at that point is clipped to it rather than
+    /// dropped, so the first column is never blank.
+    private var start: Date { GuideMetrics.gridStart(for: now) }
 
     var body: some View {
         GuideGrid(

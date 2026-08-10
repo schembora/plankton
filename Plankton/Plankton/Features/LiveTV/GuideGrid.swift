@@ -20,6 +20,15 @@ enum GuideMetrics {
 
     static var contentWidth: CGFloat { CGFloat(window / 60) * minuteWidth }
     static var slotCount: Int { Int(window / slot) }
+
+    /// Where the grid's left edge sits for a given moment: the half hour on or
+    /// before it, so the columns read as the times people expect.
+    ///
+    /// Programmes that began earlier are not dropped, they are clipped to it.
+    static func gridStart(for date: Date) -> Date {
+        let floored = (date.timeIntervalSinceReferenceDate / slot).rounded(.down) * slot
+        return Date(timeIntervalSinceReferenceDate: floored)
+    }
 }
 
 /// What the grid draws, resolved once so the layout and the cells agree.

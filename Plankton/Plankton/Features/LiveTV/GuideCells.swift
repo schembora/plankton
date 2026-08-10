@@ -106,8 +106,11 @@ struct GuideTimeAxis: View {
                 Text(time.formatted(date: .omitted, time: .shortened))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .frame(width: GuideMetrics.slot / 60 * GuideMetrics.minuteWidth, alignment: .leading)
+                    // Inset inside the column, not outside it. Padding applied
+                    // after the frame widens the column by 6pt, and twelve of
+                    // those put the axis 72pt out of step with the grid.
                     .padding(.leading, 6)
+                    .frame(width: GuideMetrics.slot / 60 * GuideMetrics.minuteWidth, alignment: .leading)
                     // The same divisions as the grid below, so a label reads
                     // as belonging to the column under it.
                     .overlay(alignment: .leading) {
