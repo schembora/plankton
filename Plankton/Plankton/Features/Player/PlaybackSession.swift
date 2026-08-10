@@ -40,6 +40,9 @@ final class PlaybackSession {
     private(set) var subtitleTracks: [PlaybackTrack] = []
     private(set) var selectedSubtitleTrack: PlaybackTrack.ID?
 
+    private(set) var audioTracks: [PlaybackTrack] = []
+    private(set) var selectedAudioTrack: PlaybackTrack.ID?
+
     /// Set while the user drags the scrubber. The engine's clock is ignored
     /// until they let go, otherwise the thumb fights the playhead.
     var isScrubbing = false
@@ -237,6 +240,11 @@ final class PlaybackSession {
         refreshTracks()
     }
 
+    func selectAudioTrack(_ id: PlaybackTrack.ID) {
+        engine.selectAudioTrack(id)
+        refreshTracks()
+    }
+
     /// Changes channel inside the running player.
     ///
     /// The engine is kept and handed a new URL, so the decoder, the audio
@@ -374,6 +382,8 @@ final class PlaybackSession {
     private func refreshTracks() {
         subtitleTracks = engine.subtitleTracks
         selectedSubtitleTrack = engine.selectedSubtitleTrack
+        audioTracks = engine.audioTracks
+        selectedAudioTrack = engine.selectedAudioTrack
     }
 
     /// `.playback` keeps audio on the speaker even with the silent switch on,

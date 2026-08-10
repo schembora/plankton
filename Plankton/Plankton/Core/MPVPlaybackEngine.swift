@@ -59,6 +59,7 @@ final class MPVPlaybackEngine: PlaybackEngine {
         static let videoTrack = "vid"
         static let trackList = "track-list"
         static let subtitleTrack = "sid"
+        static let audioTrack = "aid"
         static let subtitleScale = "sub-scale"
         static let keepAspect = "keepaspect"
         static let panscan = "panscan"
@@ -76,6 +77,20 @@ final class MPVPlaybackEngine: PlaybackEngine {
         let type: String
         let title: String?
         let lang: String?
+        let codec: String?
+
+        /// mpv's own layout string, e.g. "5.1" or "stereo".
+        let channels: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id, type, title, lang, codec
+            case channels = "demux-channels"
+        }
+
+        /// e.g. "EAC3 · 5.1", for telling two same-language tracks apart.
+        var detail: String? {
+            [codec?.uppercased(), channels].metadataLine
+        }
     }
 
     init(url: URL) {
@@ -283,6 +298,21 @@ final class MPVPlaybackEngine: PlaybackEngine {
         setProperty(Property.subtitleTrack, id.map(String.init) ?? "no")
     }
 
+    /// Every track the file carries, because the file arrived whole. This is
+    /// the direct engine's other quiet win: a server transcode collapses the
+    /// audio to one stream, so there is nothing left to choose from.
+    var audioTracks: [PlaybackTrack] {
+        tracks(ofType: "audio")
+    }
+
+    var selectedAudioTrack: PlaybackTrack.ID? {
+        Int(string(Property.audioTrack) ?? "no")
+    }
+
+    func selectAudioTrack(_ id: PlaybackTrack.ID) {
+        setProperty(Property.audioTrack, String(id))
+    }
+
     func setSubtitleScale(_ scale: Double) {
         setProperty(Property.subtitleScale, String(format: "%.2f", scale))
     }
@@ -313,7 +343,7 @@ final class MPVPlaybackEngine: PlaybackEngine {
 
         return entries
             .filter { $0.type == type }
-            .map { PlaybackTrack(id: $0.id, title: $0.title, language: $0.lang) }
+            .map { PlaybackTrack(id: $0.id, title: $0.title, language: $0.lang, detail: $0.detail) }
     }
 
     // MARK: - Presentation

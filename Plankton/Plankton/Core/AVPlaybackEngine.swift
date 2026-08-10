@@ -104,6 +104,14 @@ final class AVPlaybackEngine: PlaybackEngine {
 
     func selectSubtitleTrack(_ id: PlaybackTrack.ID?) {}
 
+    /// Empty for the same reason as the subtitle list: AVKit's menu already
+    /// offers the audio the server sent. It usually sends one, since a
+    /// transcode keeps a single stream.
+    let audioTracks: [PlaybackTrack] = []
+    let selectedAudioTrack: PlaybackTrack.ID? = nil
+
+    func selectAudioTrack(_ id: PlaybackTrack.ID) {}
+
     /// AVKit sizes subtitles from the system's captions settings, which is
     /// where a user of this engine would expect to change them.
     func setSubtitleScale(_ scale: Double) {}

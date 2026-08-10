@@ -101,6 +101,11 @@ struct PlaybackTrack: Identifiable, Hashable {
     let title: String?
     let language: String?
 
+    /// A second line for the picker, where the name alone doesn't separate
+    /// two tracks. Audio uses it: "English" and "English" is a common pairing
+    /// that only the codec and channel count tell apart.
+    var detail: String?
+
     /// What the picker shows. Files routinely carry a title or a language but
     /// not both, so this falls through before naming the track by number.
     var displayName: String {
@@ -179,6 +184,19 @@ protocol PlaybackEngine: AnyObject {
 
     /// Shows a subtitle track, or turns subtitles off with nil.
     func selectSubtitleTrack(_ id: PlaybackTrack.ID?)
+
+    /// Audio tracks in the open file, empty before it opens. A file the server
+    /// handed over untouched keeps every one it was mastered with, which is
+    /// the whole reason this is worth picking from. Engines that bring their
+    /// own picker leave it empty.
+    var audioTracks: [PlaybackTrack] { get }
+
+    /// The playing audio track.
+    var selectedAudioTrack: PlaybackTrack.ID? { get }
+
+    /// Switches audio track. Unlike subtitles there is no "off": silence is
+    /// what the mute control is for.
+    func selectAudioTrack(_ id: PlaybackTrack.ID)
 
     /// Scales rendered subtitles, 1 being the engine's own size. Engines with
     /// their own picker ignore it — AVKit takes subtitle sizing from the

@@ -81,7 +81,7 @@ struct PlayerControls: View {
     /// video surface lives in — which is what UIKit complains about when it
     /// reparents our representable.
     private enum OptionsPanel: String, Identifiable {
-        case subtitles, videoSize
+        case subtitles, audio, videoSize
         var id: String { rawValue }
     }
 
@@ -258,6 +258,12 @@ struct PlayerControls: View {
                 subtitleButton
             }
 
+            // One audio track is not a choice. Most files have exactly one,
+            // and a button that opens a list of it would be noise.
+            if session.audioTracks.count > 1 {
+                audioButton
+            }
+
             fillButton
         }
         .padding(.top, 8)
@@ -272,6 +278,10 @@ struct PlayerControls: View {
             label: "Subtitles",
             panel: .subtitles
         )
+    }
+
+    private var audioButton: some View {
+        panelButton(symbol: "waveform", label: "Audio", panel: .audio)
     }
 
     private var fillButton: some View {
@@ -331,6 +341,26 @@ struct PlayerControls: View {
                     subtitleSizeRow
                 }
 
+            case .audio:
+                // No "Off" row: silence belongs to the mute control, and an
+                // audio list that can turn itself off is a way to end up with
+                // a silent player and no obvious way back.
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(session.audioTracks) { track in
+                            optionRow(
+                                track.displayName,
+                                detail: track.detail,
+                                isSelected: session.selectedAudioTrack == track.id
+                            ) {
+                                session.selectAudioTrack(track.id)
+                            }
+                        }
+                    }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(maxHeight: 220)
+
             case .videoSize:
                 ForEach(VideoFill.allCases) { fill in
                     optionRow(fill.title, isSelected: session.videoFill == fill) {
@@ -379,6 +409,7 @@ struct PlayerControls: View {
 
     private func optionRow(
         _ title: String,
+        detail: String? = nil,
         isSelected: Bool,
         action: @escaping () -> Void
     ) -> some View {
@@ -387,8 +418,16 @@ struct PlayerControls: View {
             scheduleHide()
         } label: {
             HStack(spacing: 10) {
-                Text(title)
-                    .font(.subheadline)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.subheadline)
+
+                    if let detail {
+                        Text(detail)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
                 Spacer(minLength: 12)
 
