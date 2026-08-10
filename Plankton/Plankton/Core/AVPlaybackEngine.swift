@@ -29,6 +29,8 @@ final class AVPlaybackEngine: PlaybackEngine {
     private var stateHandlers: [() -> Void] = []
     private var failureHandlers: [(String) -> Void] = []
 
+    private var videoFill: VideoFill = .fit
+
     /// Set once and kept. Failure is terminal, and the status observation can
     /// fire repeatedly for the same item — two alerts over one broken stream is
     /// one alert too many. Retaining the message also means a stream that dies
@@ -106,6 +108,22 @@ final class AVPlaybackEngine: PlaybackEngine {
     /// where a user of this engine would expect to change them.
     func setSubtitleScale(_ scale: Double) {}
 
+    func setVideoFill(_ fill: VideoFill) {
+        // Held as well as applied: the controller is built after the engine,
+        // so a choice made for a previous item has to survive until there is
+        // something to apply it to.
+        videoFill = fill
+        controller?.videoGravity = Self.gravity(for: fill)
+    }
+
+    private static func gravity(for fill: VideoFill) -> AVLayerVideoGravity {
+        switch fill {
+        case .fit: .resizeAspect
+        case .fill: .resizeAspectFill
+        case .stretch: .resize
+        }
+    }
+
     func makeSurface() -> PlaybackSurface {
         .controller(makeViewController())
     }
@@ -122,6 +140,9 @@ final class AVPlaybackEngine: PlaybackEngine {
         // NowPlayingCenter fills the lock screen instead: AVKit would publish
         // the stream's own metadata, which for Jellyfin HLS is nothing at all.
         controller.updatesNowPlayingInfoCenter = false
+
+        // Whatever was chosen before this existed.
+        controller.videoGravity = Self.gravity(for: videoFill)
 
         self.controller = controller
         return controller

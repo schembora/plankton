@@ -60,6 +60,8 @@ final class MPVPlaybackEngine: PlaybackEngine {
         static let trackList = "track-list"
         static let subtitleTrack = "sid"
         static let subtitleScale = "sub-scale"
+        static let keepAspect = "keepaspect"
+        static let panscan = "panscan"
 
         /// The size mpv believes its window is, as opposed to the layer's own.
         /// The two disagreeing is what puts the picture in a corner.
@@ -285,6 +287,24 @@ final class MPVPlaybackEngine: PlaybackEngine {
         setProperty(Property.subtitleScale, String(format: "%.2f", scale))
     }
 
+    /// `panscan` zooms until the frame is covered and crops the overhang;
+    /// `keepaspect` off lets the picture distort to fit. They're separate
+    /// properties, so both get set every time rather than left where the last
+    /// choice put them.
+    func setVideoFill(_ fill: VideoFill) {
+        switch fill {
+        case .fit:
+            setPropertyOffMain(Property.keepAspect, "yes")
+            setPropertyOffMain(Property.panscan, "0")
+        case .fill:
+            setPropertyOffMain(Property.keepAspect, "yes")
+            setPropertyOffMain(Property.panscan, "1")
+        case .stretch:
+            setPropertyOffMain(Property.keepAspect, "no")
+            setPropertyOffMain(Property.panscan, "0")
+        }
+    }
+
     private func tracks(ofType type: String) -> [PlaybackTrack] {
         guard let json = string(Property.trackList),
               let data = json.data(using: .utf8),
@@ -467,6 +487,24 @@ final class MPVPlaybackEngine: PlaybackEngine {
     private func setProperty(_ name: String, _ value: String) {
         guard let handle else { return }
         check(mpv_set_property_string(handle, name, value), "set \(name)")
+    }
+
+    /// For properties the video output has to reconfigure for.
+    ///
+    /// mpv's setters are synchronous and block until the core has applied
+    /// them. Anything that makes the VO rebuild its render passes blocks on
+    /// the VO thread, which needs the main thread to present — so setting one
+    /// from the main thread hangs the two against each other. Cheap properties
+    /// stay synchronous, since answering immediately is what lets a track
+    /// selection be read straight back.
+    private func setPropertyOffMain(_ name: String, _ value: String) {
+        guard let handle else { return }
+
+        events.async {
+            let status = mpv_set_property_string(handle, name, value)
+            guard status < 0 else { return }
+            logger.error("mpv set \(name, privacy: .public): \(String(cString: mpv_error_string(status)))")
+        }
     }
 
     private func command(_ name: String, _ arguments: String...) {

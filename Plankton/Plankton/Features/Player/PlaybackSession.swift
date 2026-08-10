@@ -119,6 +119,13 @@ final class PlaybackSession {
         return PlaybackReporter(jellyfin: jellyfin, itemID: itemID)
     }
 
+    /// How the picture sits on screen. Deliberately not persisted: it answers
+    /// a question about the thing being watched, not a standing preference,
+    /// and carrying it into unrelated content would surprise.
+    var videoFill: VideoFill = .fit {
+        didSet { engine.setVideoFill(videoFill) }
+    }
+
     /// Reads and writes the stored preference, so a size chosen mid-episode is
     /// still there for the next one.
     var subtitleScale: Double {

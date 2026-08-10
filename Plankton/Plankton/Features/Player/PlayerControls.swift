@@ -176,7 +176,28 @@ struct PlayerControls: View {
             if !session.subtitleTracks.isEmpty {
                 subtitleMenu
             }
+
+            fillMenu
         }
+    }
+
+    /// How the picture sits on screen. Always offered: whether it's useful
+    /// depends on the shape of what's playing against the shape of the phone,
+    /// and the player can't know that until frames arrive.
+    private var fillMenu: some View {
+        Menu {
+            Picker("Video Size", selection: $session.videoFill) {
+                ForEach(VideoFill.allCases) { fill in
+                    Text(fill.title).tag(fill)
+                }
+            }
+        } label: {
+            Image(systemName: session.videoFill == .fit ? "aspectratio" : "aspectratio.fill")
+                .font(.headline)
+                .padding(12)
+                .glassEffect(.clear.interactive(), in: .circle)
+        }
+        .accessibilityLabel("Video size")
     }
 
     /// Plays the next episode without leaving the player. Reuses the engine,

@@ -65,6 +65,34 @@ enum PlaybackEngineKind: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// How the picture is laid into the screen.
+///
+/// Worth having because the two rarely agree: 4:3 material on a 16:9 phone,
+/// or a 2.39:1 film on a 16:9 screen, both leave bars that some people would
+/// rather lose than keep.
+enum VideoFill: String, CaseIterable, Identifiable {
+
+    /// The whole picture, with bars wherever the shapes differ.
+    case fit
+
+    /// Fills the screen and crops whatever overhangs it.
+    case fill
+
+    /// Fills the screen by distorting the picture. Ugly on purpose, and the
+    /// only way to get 4:3 material edge to edge without losing any of it.
+    case stretch
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .fit: "Fit"
+        case .fill: "Fill"
+        case .stretch: "Stretch"
+        }
+    }
+}
+
 /// One selectable track in the file being played.
 struct PlaybackTrack: Identifiable, Hashable {
 
@@ -156,6 +184,10 @@ protocol PlaybackEngine: AnyObject {
     /// their own picker ignore it — AVKit takes subtitle sizing from the
     /// system's accessibility settings instead.
     func setSubtitleScale(_ scale: Double)
+
+    /// Lays the picture into the screen. Applies to whatever is playing now
+    /// and to anything loaded afterwards.
+    func setVideoFill(_ fill: VideoFill)
 
     /// Releases the decoder. Nothing is playable afterwards.
     func tearDown()
