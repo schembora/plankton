@@ -131,6 +131,14 @@ extension BaseItemDto {
             : String(format: "%.1f Mbps", megabits)
     }
 
+    /// A Live TV channel rather than a recording or a file.
+    ///
+    /// Jellyfin has two kinds for this and servers use both, so anything asking
+    /// "is this live?" needs to accept either.
+    var isLiveChannel: Bool {
+        type == .tvChannel || type == .liveTvChannel
+    }
+
     /// e.g. "S2 E4" for episodes.
     var episodeLabel: String? {
         guard type == .episode else { return nil }

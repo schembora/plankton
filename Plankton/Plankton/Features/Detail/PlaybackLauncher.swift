@@ -29,7 +29,13 @@ final class PlaybackLauncher {
         downloads: DownloadService,
         settings: PlaybackSettings
     ) {
-        let engine = settings.engine
+        // A live channel is an unbounded MPEG-TS stream. AVPlayer plays
+        // progressive HTTP by asking for byte ranges, which a stream with no
+        // end can't answer, so it fails on the request rather than on the
+        // codec. The preference doesn't apply for the same reason it doesn't
+        // apply to a downloaded file only one engine can open.
+        let engine = item.isLiveChannel ? .direct : settings.engine
+
         // Prefer the downloaded copy when there is one — instant and offline-capable.
         if let itemID = item.id, let localURL = downloads.localURL(forItemID: itemID) {
             playback = PlaybackItem(
@@ -62,6 +68,7 @@ final class PlaybackLauncher {
                 playback = PlaybackItem(
                     url: source.url,
                     engine: engine,
+                    isLive: source.isLive,
                     itemID: item.id,
                     startTicks: item.resumePositionTicks,
                     metadata: NowPlayingMetadata(item)

@@ -49,6 +49,16 @@ private struct MainTabView: View {
             }
             .disabled(jellyfin.isOffline)
 
+            // Live TV is a server-side add-on, so the tab only exists where the
+            // server actually offers it — an empty one would be a control that
+            // does nothing on most setups.
+            if jellyfin.hasLiveTV {
+                Tab("Live TV", systemImage: "antenna.radiowaves.left.and.right", value: .liveTV) {
+                    LiveTVView()
+                }
+                .disabled(jellyfin.isOffline)
+            }
+
             Tab("Downloads", systemImage: "arrow.down.circle", value: .downloads) {
                 DownloadsView()
             }

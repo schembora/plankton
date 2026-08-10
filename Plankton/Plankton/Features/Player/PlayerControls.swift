@@ -49,6 +49,11 @@ struct PlayerControls: View {
     @Bindable var session: PlaybackSession
 
     let title: String?
+
+    /// A live channel has no end to scrub towards, so the transport collapses
+    /// to play/pause and the timeline is replaced by a live marker.
+    var isLive = false
+
     let onClose: () -> Void
 
     @State private var isVisible = true
@@ -70,7 +75,11 @@ struct PlayerControls: View {
                     Spacer(minLength: 0)
                     transport
                     Spacer(minLength: 0)
-                    scrubber
+                    if isLive {
+                        liveMarker
+                    } else {
+                        scrubber
+                    }
                 }
                 .padding(20)
                 .transition(.opacity)
@@ -158,9 +167,30 @@ struct PlayerControls: View {
         )
     }
 
+    /// Stands in for the timeline on a live channel. Says where you are rather
+    /// than offering a position to move to, which is the honest thing to show
+    /// when there is nothing to move to.
+    private var liveMarker: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(.red)
+                .frame(width: 8, height: 8)
+
+            Text("LIVE")
+                .font(.caption.weight(.semibold))
+
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.secondary)
+    }
+
     private var transport: some View {
         HStack(spacing: 44) {
-            skipButton("gobackward.15", by: -skipInterval)
+            // Skipping needs somewhere to skip to. A live stream has no
+            // timeline behind or ahead of the playhead.
+            if !isLive {
+                skipButton("gobackward.15", by: -skipInterval)
+            }
 
             Button(action: act(session.togglePlayPause)) {
                 Image(systemName: session.isPlaying ? "pause.fill" : "play.fill")
@@ -170,7 +200,9 @@ struct PlayerControls: View {
             }
             .accessibilityLabel(session.isPlaying ? "Pause" : "Play")
 
-            skipButton("goforward.15", by: skipInterval)
+            if !isLive {
+                skipButton("goforward.15", by: skipInterval)
+            }
         }
     }
 

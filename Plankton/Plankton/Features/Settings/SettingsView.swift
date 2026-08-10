@@ -38,7 +38,11 @@ struct SettingsView: View {
                     } header: {
                         Text("Playback")
                     } footer: {
-                        Text(playback.engine.explanation)
+                        // Said here rather than left to be discovered: the
+                        // setting is overridden for live channels, and a
+                        // silent exception to a preference is a bug report.
+                        Text(playback.engine.explanation
+                            + (jellyfin.hasLiveTV ? " Live TV always plays directly, whichever is chosen." : ""))
                     }
                 }
 

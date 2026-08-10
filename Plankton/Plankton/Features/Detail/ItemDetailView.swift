@@ -18,6 +18,10 @@ struct PlaybackItem: Identifiable {
     /// disk decides rather than the preference.
     var engine: PlaybackEngineKind = .server
 
+    /// A stream with no end. There is nothing to seek within and no position
+    /// worth reporting, so the controls and the reporter both stand down.
+    var isLive = false
+
     /// Server item being played, for resume and progress reporting. Nil for
     /// local playback with no session to report against.
     var itemID: String?
