@@ -7,7 +7,10 @@
 
 import JellyfinAPI
 import Observation
+import OSLog
 import SwiftUI
+
+private let logger = Logger(subsystem: "com.schembor.Plankton", category: "Player")
 
 /// Turns a tapped item into a `PlaybackItem`, preferring a downloaded copy.
 ///
@@ -23,11 +26,14 @@ final class PlaybackLauncher {
     var errorMessage: String?
     private(set) var isPreparing = false
 
+    /// - Parameter channels: the line-up this item belongs to, when it's a live
+    ///   channel. Carried into the player so it can change channel in place.
     func play(
         _ item: BaseItemDto,
         jellyfin: JellyfinService,
         downloads: DownloadService,
-        settings: PlaybackSettings
+        settings: PlaybackSettings,
+        channels: [BaseItemDto] = []
     ) {
         // A live channel is an unbounded MPEG-TS stream. AVPlayer plays
         // progressive HTTP by asking for byte ranges, which a stream with no
@@ -38,12 +44,19 @@ final class PlaybackLauncher {
 
         // Prefer the downloaded copy when there is one — instant and offline-capable.
         if let itemID = item.id, let localURL = downloads.localURL(forItemID: itemID) {
+            // The file's own format decides, not the setting: an original
+            // container can't be opened by AVPlayer, and an HLS bundle can't
+            // be opened by mpv.
+            let required = downloads.requiredEngine(forItemID: itemID)
+            logger.info("""
+                Playing \(itemID, privacy: .public) from disk on \
+                \((required ?? engine).rawValue, privacy: .public) \
+                (file says \(required?.rawValue ?? "nothing", privacy: .public))
+                """)
+
             playback = PlaybackItem(
                 url: localURL,
-                // The file's own format decides, not the setting: an original
-                // container can't be opened by AVPlayer, and an HLS bundle
-                // can't be opened by mpv.
-                engine: downloads.requiredEngine(forItemID: itemID) ?? engine,
+                engine: required ?? engine,
                 itemID: itemID,
                 startTicks: item.resumePositionTicks,
                 metadata: NowPlayingMetadata(item)
@@ -69,9 +82,11 @@ final class PlaybackLauncher {
                     url: source.url,
                     engine: engine,
                     isLive: source.isLive,
+                    liveStreamID: source.liveStreamID,
                     itemID: item.id,
                     startTicks: item.resumePositionTicks,
-                    metadata: NowPlayingMetadata(item)
+                    metadata: NowPlayingMetadata(item),
+                    channels: channels
                 )
             } else {
                 errorMessage = "This video isn't playable. The server may not support transcoding for it."

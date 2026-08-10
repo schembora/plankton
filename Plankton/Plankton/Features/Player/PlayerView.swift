@@ -47,11 +47,10 @@ struct PlayerContainerView: View {
                         // AVKit arrives with a scrubber and transport; an engine
                         // drawing into a bare layer has none.
                         if !session.engine.providesControls {
-                            PlayerControls(
-                                session: session,
-                                title: playback.metadata?.title,
-                                isLive: playback.isLive
-                            ) {
+                            // Title and live state come from the session, not
+                            // the item this opened with: changing channel
+                            // replaces what's playing underneath.
+                            PlayerControls(session: session) {
                                 dismiss()
                             }
                         }
@@ -85,6 +84,7 @@ struct PlayerContainerView: View {
             playback: playback,
             engineKind: playback.engine,
             settings: settings,
+            jellyfin: jellyfin,
             reporter: reporter
         )
         session.start(artwork: images) { message in

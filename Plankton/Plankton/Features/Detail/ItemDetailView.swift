@@ -22,6 +22,10 @@ struct PlaybackItem: Identifiable {
     /// worth reporting, so the controls and the reporter both stand down.
     var isLive = false
 
+    /// The live stream to release when playback ends, when the server asked
+    /// for one back. It holds a tuner open until it gets it.
+    var liveStreamID: String?
+
     /// Server item being played, for resume and progress reporting. Nil for
     /// local playback with no session to report against.
     var itemID: String?
@@ -32,6 +36,11 @@ struct PlaybackItem: Identifiable {
     /// What the lock screen shows while this plays. Nil leaves the info center
     /// alone rather than publishing an untitled entry.
     var metadata: NowPlayingMetadata?
+
+    /// The channels reachable from inside the player, so a live viewer can
+    /// change channel without going back to the list. Empty for everything
+    /// else, which is what keeps the picker out of an ordinary player.
+    var channels: [BaseItemDto] = []
 }
 
 struct ItemDetailView: View {

@@ -47,7 +47,15 @@ struct LiveTVView: View {
     private var channelList: some View {
         List(channels) { channel in
             Button {
-                launcher.play(channel, jellyfin: jellyfin, downloads: downloads, settings: playback)
+                // The whole line-up goes with it, so the player can change
+                // channel without coming back here and rebuilding the engine.
+                launcher.play(
+                    channel,
+                    jellyfin: jellyfin,
+                    downloads: downloads,
+                    settings: playback,
+                    channels: channels
+                )
             } label: {
                 ChannelRow(channel: channel)
             }

@@ -111,6 +111,11 @@ protocol PlaybackEngine: AnyObject {
     func pause()
     func seek(to seconds: TimeInterval)
 
+    /// Replaces what's playing without tearing the engine down. The decoder,
+    /// the audio session and the video surface all stay up, which is the
+    /// difference between changing channel and restarting the player.
+    func load(_ url: URL)
+
     /// Whether the engine's surface arrives with transport controls already on
     /// it. AVKit's does; a decoder drawing into a bare layer has nothing, and
     /// the app has to supply them.

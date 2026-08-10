@@ -29,6 +29,10 @@ struct PlaybackSource {
     /// from the server's own answer rather than the item's type, since that's
     /// what decides whether there is anything to seek within.
     var isLive = false
+
+    /// Set only where the server said the stream needs releasing. Opening one
+    /// ties up a tuner, and nothing else hands it back.
+    var liveStreamID: String?
 }
 
 @Observable
@@ -263,6 +267,10 @@ final class JellyfinService {
 
         let isLive = mediaSource.isInfiniteStream == true
 
+        // Only what the server asked to have handed back. Closing a stream it
+        // doesn't consider open is at best a wasted request.
+        let closeableStreamID = mediaSource.requiresClosing == true ? mediaSource.liveStreamID : nil
+
         // Direct play first: when the server says the file is playable as-is,
         // taking the transcode instead would burn its CPU for nothing.
         if mediaSource.isSupportsDirectPlay == true, let container = mediaSource.container {
@@ -275,7 +283,7 @@ final class JellyfinService {
             streamParameters.liveStreamID = mediaSource.liveStreamID
             let request = Paths.getVideoStreamByContainer(itemID: itemID, container: container, parameters: streamParameters)
             guard let url = client.url(with: request, queryAPIKey: true) else { return nil }
-            return PlaybackSource(url: url, isDirectFile: true, isLive: isLive)
+            return PlaybackSource(url: url, isDirectFile: true, isLive: isLive, liveStreamID: closeableStreamID)
         }
 
         // Transcoded HLS — the URL already carries the play session and API key.
@@ -288,7 +296,7 @@ final class JellyfinService {
                 url += "&SubtitleMethod=Hls&SubtitleStreamIndex=\(subtitleIndex)"
             }
             guard let resolved = client.url(path: url) else { return nil }
-            return PlaybackSource(url: resolved, isDirectFile: false, isLive: isLive)
+            return PlaybackSource(url: resolved, isDirectFile: false, isLive: isLive, liveStreamID: closeableStreamID)
         }
 
         return nil

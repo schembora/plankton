@@ -28,6 +28,16 @@ extension NowPlayingMetadata {
     /// series underneath, the way a track sits under its artist — the reverse of
     /// a poster tile, where the series is what you're scanning for.
     init(_ item: BaseItemDto) {
+        // A channel leads with itself and puts the programme underneath. The
+        // channel is what was chosen and what stays put; the programme is
+        // whatever happens to be on it.
+        if item.isLiveChannel {
+            title = [item.channelNumber, item.name].metadataLine ?? item.displayTitle
+            subtitle = item.currentProgram?.name
+            artwork = item.artwork(.primary, maxWidth: 600)
+            return
+        }
+
         title = item.name ?? item.displayTitle
         if item.type == .episode {
             subtitle = [item.seriesName, item.episodeLabel].metadataLine

@@ -7,6 +7,7 @@
 
 import AVFAudio
 import Foundation
+import JellyfinAPI
 import Observation
 import OSLog
 
@@ -43,10 +44,28 @@ final class PlaybackSession {
     /// until they let go, otherwise the thumb fights the playhead.
     var isScrubbing = false
 
-    @ObservationIgnored private let playback: PlaybackItem
+    /// What's playing right now. Not the item the session was opened with:
+    /// changing channel replaces it in place, and the title, the live marker
+    /// and the stream to release all follow from here.
+    private(set) var current: PlaybackItem
+
+    /// True while a channel change is in flight, so the picker can't be used
+    /// to stack three switches on top of each other.
+    private(set) var isSwitching = false
+
+    var title: String? { current.metadata?.title }
+    var subtitle: String? { current.metadata?.subtitle }
+    var isLive: Bool { current.isLive }
+    var channels: [BaseItemDto] { current.channels }
+
     @ObservationIgnored private let settings: PlaybackSettings
+    @ObservationIgnored private let jellyfin: JellyfinService
     @ObservationIgnored private let reporter: PlaybackReporter?
     @ObservationIgnored private let nowPlaying = NowPlayingCenter()
+
+    /// Held from `start` so a channel change can republish the lock screen
+    /// with the new channel's artwork.
+    @ObservationIgnored private var artwork: ImageCache?
 
     /// The player can disappear more than once — a dismiss and a teardown can
     /// both land — and the stop report must only go out once.
@@ -56,10 +75,12 @@ final class PlaybackSession {
         playback: PlaybackItem,
         engineKind: PlaybackEngineKind,
         settings: PlaybackSettings,
+        jellyfin: JellyfinService,
         reporter: PlaybackReporter?
     ) {
-        self.playback = playback
+        current = playback
         self.settings = settings
+        self.jellyfin = jellyfin
         self.reporter = reporter
         engine = engineKind.makeEngine(url: playback.url)
         surface = engine.makeSurface()
@@ -78,6 +99,7 @@ final class PlaybackSession {
     // MARK: - Lifecycle
 
     func start(artwork: ImageCache, onError: @escaping (String) -> Void) {
+        self.artwork = artwork
         configureAudioSession()
 
         engine.observeFailure(onError)
@@ -88,13 +110,13 @@ final class PlaybackSession {
 
         engine.setSubtitleScale(settings.subtitleScale)
 
-        if let metadata = playback.metadata {
+        if let metadata = current.metadata {
             nowPlaying.start(metadata, for: engine, artwork: artwork)
         }
 
         // Resume where the server says we left off, before play, so the start
         // report carries the resume point rather than zero.
-        if let startTicks = playback.startTicks {
+        if let startTicks = current.startTicks {
             engine.seek(to: PlaybackReporter.seconds(fromTicks: startTicks))
         }
 
@@ -116,8 +138,20 @@ final class PlaybackSession {
         hasEnded = true
 
         endReporting()
+        releaseLiveStream()
         nowPlaying.stop()
         engine.tearDown()
+    }
+
+    /// Hands a live stream back to the server. It ties up a tuner until it gets
+    /// one, and nothing else releases it — closing the player is the only
+    /// signal the server ever sees.
+    private func releaseLiveStream() {
+        guard let liveStreamID = current.liveStreamID else { return }
+
+        Task { [jellyfin] in
+            try? await jellyfin.send(Paths.closeLiveStream(liveStreamID: liveStreamID))
+        }
     }
 
     // MARK: - Transport
@@ -152,6 +186,50 @@ final class PlaybackSession {
 
     func selectSubtitleTrack(_ id: PlaybackTrack.ID?) {
         engine.selectSubtitleTrack(id)
+        refreshTracks()
+    }
+
+    /// Changes channel inside the running player.
+    ///
+    /// The engine is kept and handed a new URL, so the decoder, the audio
+    /// session and the video surface all stay up — rebuilding it per channel
+    /// would pay mpv's whole startup on every change. The outgoing stream is
+    /// released first, since holding two open ties up a tuner that nothing
+    /// will ever come back for.
+    func switchTo(_ channel: BaseItemDto) async {
+        guard !isSwitching else { return }
+        isSwitching = true
+        defer { isSwitching = false }
+
+        releaseLiveStream()
+
+        // Live only ever plays directly, so the engine can't change under us
+        // and the surface stays valid.
+        let source = await jellyfin.playbackSource(
+            for: channel,
+            engine: .direct,
+            maxBitrate: settings.maxBitrate(expensive: jellyfin.isOnExpensiveNetwork)
+        )
+        guard let source else { return }
+
+        current = PlaybackItem(
+            url: source.url,
+            engine: .direct,
+            isLive: source.isLive,
+            liveStreamID: source.liveStreamID,
+            itemID: channel.id,
+            metadata: NowPlayingMetadata(channel),
+            channels: current.channels
+        )
+
+        // The lock screen is showing the channel we just left.
+        nowPlaying.stop()
+        if let metadata = current.metadata, let artwork {
+            nowPlaying.start(metadata, for: engine, artwork: artwork)
+        }
+
+        engine.load(source.url)
+        refresh()
         refreshTracks()
     }
 
