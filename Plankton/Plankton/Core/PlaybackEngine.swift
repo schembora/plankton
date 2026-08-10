@@ -45,6 +45,17 @@ enum PlaybackEngineKind: String, Codable, CaseIterable, Identifiable {
     /// The kinds Settings offers.
     static var available: [PlaybackEngineKind] { [.server, .direct] }
 
+    /// What a fresh install plays on, and what an unusable stored choice falls
+    /// back to.
+    ///
+    /// Direct, because it's the reason the engine exists: the server hands over
+    /// the file instead of re-encoding it, which is most of the wait before a
+    /// video starts. It costs Picture in Picture and AirPlay, so anyone who
+    /// picked Server keeps it — only an install that never chose moves.
+    static var defaultEngine: PlaybackEngineKind {
+        available.contains(.direct) ? .direct : .server
+    }
+
     @MainActor
     func makeEngine(url: URL) -> any PlaybackEngine {
         switch self {

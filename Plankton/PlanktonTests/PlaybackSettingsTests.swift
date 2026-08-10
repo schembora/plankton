@@ -21,8 +21,20 @@ struct PlaybackSettingsTests {
         UserDefaults(suiteName: "PlaybackSettingsTests.\(UUID().uuidString)")!
     }
 
-    @Test func defaultsToTheServerEngine() {
-        #expect(PlaybackSettings(defaults: makeDefaults()).engine == .server)
+    /// A fresh install plays directly: that's the point of the engine, and it
+    /// is what an install that never chose gets.
+    @Test func freshInstallPlaysDirectly() {
+        #expect(PlaybackEngineKind.defaultEngine == .direct)
+        #expect(PlaybackSettings(defaults: makeDefaults()).engine == .direct)
+    }
+
+    /// Nothing writes the preference except the user, so an install that
+    /// already picked Server keeps it rather than being moved.
+    @Test func anExplicitChoiceIsNotOverriddenByTheDefault() {
+        let defaults = makeDefaults()
+        defaults.set(PlaybackEngineKind.server.rawValue, forKey: Self.key)
+
+        #expect(PlaybackSettings(defaults: defaults).engine == .server)
     }
 
     /// There's no save step in the UI, so the choice has to land on the way out.
@@ -47,20 +59,20 @@ struct PlaybackSettingsTests {
     /// offer must not leave playback pointed at nothing. Vacuous while every
     /// case is offered, but it keeps the guarantee pinned for the next kind
     /// that gets added ahead of its engine.
-    @Test func unavailableEngineFallsBackToServer() {
+    @Test func unavailableEngineFallsBackToTheDefault() {
         for kind in PlaybackEngineKind.allCases where !PlaybackEngineKind.available.contains(kind) {
             let defaults = makeDefaults()
             defaults.set(kind.rawValue, forKey: Self.key)
 
-            #expect(PlaybackSettings(defaults: defaults).engine == .server)
+            #expect(PlaybackSettings(defaults: defaults).engine == .defaultEngine)
         }
     }
 
-    @Test func unrecognisedEngineFallsBackToServer() {
+    @Test func unrecognisedEngineFallsBackToTheDefault() {
         let defaults = makeDefaults()
         defaults.set("quicktime-vr", forKey: Self.key)
 
-        #expect(PlaybackSettings(defaults: defaults).engine == .server)
+        #expect(PlaybackSettings(defaults: defaults).engine == .defaultEngine)
     }
 
     // MARK: - Subtitle scale

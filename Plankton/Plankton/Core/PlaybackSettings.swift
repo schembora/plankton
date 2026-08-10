@@ -101,7 +101,11 @@ final class PlaybackSettings {
         // shipped yet, or one where it was withdrawn — falls back rather than
         // leaving playback pointed at an engine that can't be built.
         let stored = defaults.string(forKey: Keys.engine).flatMap(PlaybackEngineKind.init(rawValue:))
-        engine = if let stored, PlaybackEngineKind.available.contains(stored) { stored } else { .server }
+        engine = if let stored, PlaybackEngineKind.available.contains(stored) {
+            stored
+        } else {
+            PlaybackEngineKind.defaultEngine
+        }
 
         // `double(forKey:)` answers 0 for a key that was never written, which
         // is indistinguishable from a stored zero and equally unusable.
