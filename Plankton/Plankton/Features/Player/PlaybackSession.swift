@@ -56,11 +56,33 @@ final class PlaybackSession {
     var title: String? { current.metadata?.title }
     var subtitle: String? { current.metadata?.subtitle }
     var isLive: Bool { current.isLive }
-    var channels: [BaseItemDto] { current.channels }
+
+    /// What else this playthrough can move to. A channel line-up, or the
+    /// episodes around this one.
+    var queue: [BaseItemDto] { current.queue }
+
+    /// Where `current` sits in the queue, when it's in there at all. Matched by
+    /// item rather than held as an index, so it survives the queue being
+    /// reloaded underneath.
+    var queueIndex: Int? {
+        guard let itemID = current.itemID else { return nil }
+        return queue.firstIndex { $0.id == itemID }
+    }
+
+    var hasPreviousInQueue: Bool { (queueIndex ?? 0) > 0 }
+    var hasNextInQueue: Bool { (queueIndex ?? queue.count) < queue.count - 1 }
 
     @ObservationIgnored private let settings: PlaybackSettings
     @ObservationIgnored private let jellyfin: JellyfinService
-    @ObservationIgnored private let reporter: PlaybackReporter?
+
+    /// The engine this session was built on. Moving through the queue
+    /// negotiates against it rather than the current preference: the surface
+    /// was built once, so the decoder can't change underneath it.
+    @ObservationIgnored private let engineKind: PlaybackEngineKind
+
+    /// Rebuilt whenever `current` changes. One reporter belongs to one item,
+    /// and moving to the next has to stop reporting against the last.
+    @ObservationIgnored private var reporter: PlaybackReporter?
     @ObservationIgnored private let nowPlaying = NowPlayingCenter()
 
     /// Held from `start` so a channel change can republish the lock screen
@@ -75,15 +97,26 @@ final class PlaybackSession {
         playback: PlaybackItem,
         engineKind: PlaybackEngineKind,
         settings: PlaybackSettings,
-        jellyfin: JellyfinService,
-        reporter: PlaybackReporter?
+        jellyfin: JellyfinService
     ) {
         current = playback
+        self.engineKind = engineKind
         self.settings = settings
         self.jellyfin = jellyfin
-        self.reporter = reporter
         engine = engineKind.makeEngine(url: playback.url)
         surface = engine.makeSurface()
+        reporter = Self.makeReporter(for: playback, jellyfin: jellyfin)
+    }
+
+    /// Only server-backed playback reports. A local file played offline has
+    /// nothing to report to, and a live channel has no position worth keeping —
+    /// posting one would put a resume point on a stream nobody can resume.
+    private static func makeReporter(
+        for item: PlaybackItem,
+        jellyfin: JellyfinService
+    ) -> PlaybackReporter? {
+        guard let itemID = item.itemID, jellyfin.isSignedIn, !item.isLive else { return nil }
+        return PlaybackReporter(jellyfin: jellyfin, itemID: itemID)
     }
 
     /// Reads and writes the stored preference, so a size chosen mid-episode is
@@ -120,6 +153,7 @@ final class PlaybackSession {
             engine.seek(to: PlaybackReporter.seconds(fromTicks: startTicks))
         }
 
+        observeProgress()
         beginReporting()
 
         // Only engines drawing their own controls need a clock to draw it from.
@@ -196,41 +230,62 @@ final class PlaybackSession {
     /// would pay mpv's whole startup on every change. The outgoing stream is
     /// released first, since holding two open ties up a tuner that nothing
     /// will ever come back for.
-    func switchTo(_ channel: BaseItemDto) async {
+    func switchTo(_ item: BaseItemDto) async {
         guard !isSwitching else { return }
         isSwitching = true
         defer { isSwitching = false }
 
+        // Finish with what's playing before opening the next: a stop report
+        // has to name the item it belongs to, and a live stream left open
+        // holds a tuner nothing will come back for.
+        endReporting()
         releaseLiveStream()
 
-        // Live only ever plays directly, so the engine can't change under us
-        // and the surface stays valid.
+        // Negotiated against the engine already running, not the preference.
+        // The surface was built for it and can't be swapped mid-playthrough.
         let source = await jellyfin.playbackSource(
-            for: channel,
-            engine: .direct,
+            for: item,
+            engine: engineKind,
             maxBitrate: settings.maxBitrate(expensive: jellyfin.isOnExpensiveNetwork)
         )
         guard let source else { return }
 
         current = PlaybackItem(
             url: source.url,
-            engine: .direct,
+            engine: engineKind,
             isLive: source.isLive,
             liveStreamID: source.liveStreamID,
-            itemID: channel.id,
-            metadata: NowPlayingMetadata(channel),
-            channels: current.channels
+            itemID: item.id,
+            startTicks: item.resumePositionTicks,
+            metadata: NowPlayingMetadata(item),
+            queue: current.queue
         )
 
-        // The lock screen is showing the channel we just left.
+        // The lock screen is still showing what we just left.
         nowPlaying.stop()
         if let metadata = current.metadata, let artwork {
             nowPlaying.start(metadata, for: engine, artwork: artwork)
         }
 
-        engine.load(source.url)
+        engine.load(source.url, startingAt: current.startTicks.map(PlaybackReporter.seconds(fromTicks:)))
+
+        reporter = Self.makeReporter(for: current, jellyfin: jellyfin)
+        beginReporting()
+
         refresh()
         refreshTracks()
+    }
+
+    /// Moves through the queue. For a channel line-up these are channel down
+    /// and up; for episodes, the previous and next one.
+    func goToPreviousInQueue() async {
+        guard let index = queueIndex, index > 0 else { return }
+        await switchTo(queue[index - 1])
+    }
+
+    func goToNextInQueue() async {
+        guard let index = queueIndex, index < queue.count - 1 else { return }
+        await switchTo(queue[index + 1])
     }
 
     // MARK: - State
@@ -264,17 +319,25 @@ final class PlaybackSession {
 
     // MARK: - Reporting
 
-    /// Announces the play and then heartbeats position on an interval, so the
-    /// server's resume point tracks along even if the app is killed without a
-    /// clean stop.
+    /// Announces the play. Called again for each item the session moves to,
+    /// which is why it registers nothing: an observer per channel change would
+    /// stack up one heartbeat per switch.
     private func beginReporting() {
         guard let reporter else { return }
 
         let start = engine.currentTime
         Task { await reporter.started(atSeconds: start) }
+    }
 
+    /// Heartbeats position on an interval so the server's resume point tracks
+    /// along even if the app is killed without a clean stop. Registered once
+    /// for the session and reads whichever reporter is current, since the item
+    /// underneath it can change.
+    private func observeProgress() {
         engine.observeTime(interval: PlaybackReporter.progressInterval) { [weak self] seconds in
-            let isPaused = self?.engine.isPlaying != true
+            guard let self, let reporter else { return }
+
+            let isPaused = !engine.isPlaying
             Task { await reporter.progress(atSeconds: seconds, isPaused: isPaused) }
         }
     }

@@ -37,10 +37,11 @@ struct PlaybackItem: Identifiable {
     /// alone rather than publishing an untitled entry.
     var metadata: NowPlayingMetadata?
 
-    /// The channels reachable from inside the player, so a live viewer can
-    /// change channel without going back to the list. Empty for everything
-    /// else, which is what keeps the picker out of an ordinary player.
-    var channels: [BaseItemDto] = []
+    /// What else can be reached from inside the player without going back to
+    /// the list it was opened from: a channel line-up, or the episodes around
+    /// this one. Empty where there is nowhere to move to, which is what keeps
+    /// the controls out of an ordinary player.
+    var queue: [BaseItemDto] = []
 }
 
 struct ItemDetailView: View {

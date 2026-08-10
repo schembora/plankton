@@ -31,14 +31,15 @@ final class PlaybackLauncher {
     /// at once, which reads as though the whole list had been selected.
     private(set) var preparingItemID: String?
 
-    /// - Parameter channels: the line-up this item belongs to, when it's a live
-    ///   channel. Carried into the player so it can change channel in place.
+    /// - Parameter queue: what this item sits among — a channel line-up, or
+    ///   the episodes around it. Carried into the player so it can move
+    ///   between them without rebuilding the engine.
     func play(
         _ item: BaseItemDto,
         jellyfin: JellyfinService,
         downloads: DownloadService,
         settings: PlaybackSettings,
-        channels: [BaseItemDto] = []
+        queue: [BaseItemDto] = []
     ) {
         // A live channel is an unbounded MPEG-TS stream. AVPlayer plays
         // progressive HTTP by asking for byte ranges, which a stream with no
@@ -93,7 +94,7 @@ final class PlaybackLauncher {
                     itemID: item.id,
                     startTicks: item.resumePositionTicks,
                     metadata: NowPlayingMetadata(item),
-                    channels: channels
+                    queue: queue
                 )
             } else {
                 errorMessage = "This video isn't playable. The server may not support transcoding for it."

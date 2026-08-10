@@ -54,7 +54,7 @@ struct LiveTVView: View {
                     jellyfin: jellyfin,
                     downloads: downloads,
                     settings: playback,
-                    channels: channels
+                    queue: channels
                 )
             } label: {
                 // Progress belongs on the row that was tapped. Disabling the

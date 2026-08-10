@@ -125,7 +125,11 @@ protocol PlaybackEngine: AnyObject {
     /// Replaces what's playing without tearing the engine down. The decoder,
     /// the audio session and the video surface all stay up, which is the
     /// difference between changing channel and restarting the player.
-    func load(_ url: URL)
+    ///
+    /// `startingAt` opens at a position rather than seeking to one afterwards.
+    /// A seek issued straight after a load lands before the file is open, and
+    /// engines differ on whether they remember it.
+    func load(_ url: URL, startingAt seconds: TimeInterval?)
 
     /// Whether the engine's surface arrives with transport controls already on
     /// it. AVKit's does; a decoder drawing into a bare layer has nothing, and

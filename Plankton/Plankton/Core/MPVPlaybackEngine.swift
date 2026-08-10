@@ -236,12 +236,16 @@ final class MPVPlaybackEngine: PlaybackEngine {
     /// mpv swaps the file inside the running instance, so the Vulkan surface,
     /// the decoder and the audio session all survive. Rebuilding the engine
     /// per channel would pay mpv's whole startup on every change.
-    func load(_ url: URL) {
+    func load(_ url: URL, startingAt seconds: TimeInterval?) {
         hasIssuedLoad = true
         isFileOpen = false
-        pendingStart = nil
+        pendingStart = seconds
         // The previous stream's failure has nothing to say about this one.
         failureMessage = nil
+
+        // Set before the file is handed over: mpv opens at this position, and
+        // a seek issued afterwards would arrive before there is a file to seek.
+        setOption(Property.start, seconds.map { String(format: "%.3f", max(0, $0)) } ?? "none")
 
         command("loadfile", url.absoluteString, "replace")
         setFlag(Property.pause, false)

@@ -67,14 +67,6 @@ struct PlayerContainerView: View {
         }
     }
 
-    /// Only server-backed playback reports; a local file played offline has
-    /// nothing to report to, and a live channel has no position worth keeping —
-    /// posting one would put a resume point on a stream nobody can resume.
-    private var reporter: PlaybackReporter? {
-        guard let itemID = playback.itemID, jellyfin.isSignedIn, !playback.isLive else { return nil }
-        return PlaybackReporter(jellyfin: jellyfin, itemID: itemID)
-    }
-
     private func startPlayback() {
         guard session == nil else { return }
 
@@ -84,8 +76,7 @@ struct PlayerContainerView: View {
             playback: playback,
             engineKind: playback.engine,
             settings: settings,
-            jellyfin: jellyfin,
-            reporter: reporter
+            jellyfin: jellyfin
         )
         session.start(artwork: images) { message in
             errorMessage = message
