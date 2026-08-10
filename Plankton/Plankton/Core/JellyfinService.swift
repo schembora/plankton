@@ -24,6 +24,15 @@ struct PlaybackSource {
     /// True when this is the original file, false when it's an HLS stream the
     /// server is transcoding.
     let isDirectFile: Bool
+
+    /// A stream with no end: a Live TV channel rather than a recording. Taken
+    /// from the server's own answer rather than the item's type, since that's
+    /// what decides whether there is anything to seek within.
+    var isLive = false
+
+    /// Set only where the server said the stream needs releasing. Opening one
+    /// ties up a tuner, and nothing else hands it back.
+    var liveStreamID: String?
 }
 
 @Observable
@@ -58,6 +67,11 @@ final class JellyfinService {
     /// since a hotspot is someone's cellular data too.
     private(set) var isOnExpensiveNetwork = false
 
+    /// Whether this server has Live TV set up. Cached alongside the session and
+    /// restored synchronously, so the tab doesn't appear a beat after launch —
+    /// then refreshed in the background like everything else here.
+    private(set) var hasLiveTV = false
+
     /// The server chosen on the connect screen, before sign-in completes.
     private(set) var pendingServerURL: URL?
     private(set) var pendingServerName: String?
@@ -74,6 +88,7 @@ final class JellyfinService {
         static let serverName = "serverName"
         static let userID = "userID"
         static let username = "username"
+        static let hasLiveTV = "hasLiveTV"
     }
 
     init() {
@@ -170,12 +185,14 @@ final class JellyfinService {
         defaults.removeObject(forKey: Keys.serverName)
         defaults.removeObject(forKey: Keys.userID)
         defaults.removeObject(forKey: Keys.username)
+        defaults.removeObject(forKey: Keys.hasLiveTV)
 
         self.client = nil
         serverURL = nil
         serverName = nil
         userID = nil
         username = nil
+        hasLiveTV = false
         isOffline = false
         pendingServerURL = nil
         pendingServerName = nil
@@ -233,12 +250,26 @@ final class JellyfinService {
         // take, where this is what it wants right now. Servers honour this one.
         body.maxStreamingBitrate = maxBitrate
 
+        // A Live TV source arrives as a template until the server opens it.
+        // Unopened, it has no stream details to match against the profile, so
+        // the server assumes the codec is unsupported and answers with a
+        // transcode URL for a stream it never inspected — which then fails.
+        if item.isLiveChannel {
+            body.isAutoOpenLiveStream = true
+        }
+
         var parameters = Paths.GetPostedPlaybackInfoParameters()
         parameters.userID = userID
 
         guard let info = try? await send(Paths.getPostedPlaybackInfo(itemID: itemID, parameters: parameters, body)),
               let mediaSource = info.mediaSources?.first
         else { return nil }
+
+        let isLive = mediaSource.isInfiniteStream == true
+
+        // Only what the server asked to have handed back. Closing a stream it
+        // doesn't consider open is at best a wasted request.
+        let closeableStreamID = mediaSource.requiresClosing == true ? mediaSource.liveStreamID : nil
 
         // Direct play first: when the server says the file is playable as-is,
         // taking the transcode instead would burn its CPU for nothing.
@@ -247,9 +278,12 @@ final class JellyfinService {
             streamParameters.isStatic = true
             streamParameters.mediaSourceID = mediaSource.id ?? itemID
             streamParameters.deviceID = deviceID
+            // Names the stream the server just opened. Without it a live
+            // request reads as a new one, and the server has nothing to serve.
+            streamParameters.liveStreamID = mediaSource.liveStreamID
             let request = Paths.getVideoStreamByContainer(itemID: itemID, container: container, parameters: streamParameters)
             guard let url = client.url(with: request, queryAPIKey: true) else { return nil }
-            return PlaybackSource(url: url, isDirectFile: true)
+            return PlaybackSource(url: url, isDirectFile: true, isLive: isLive, liveStreamID: closeableStreamID)
         }
 
         // Transcoded HLS — the URL already carries the play session and API key.
@@ -262,7 +296,7 @@ final class JellyfinService {
                 url += "&SubtitleMethod=Hls&SubtitleStreamIndex=\(subtitleIndex)"
             }
             guard let resolved = client.url(path: url) else { return nil }
-            return PlaybackSource(url: resolved, isDirectFile: false)
+            return PlaybackSource(url: resolved, isDirectFile: false, isLive: isLive, liveStreamID: closeableStreamID)
         }
 
         return nil
@@ -362,6 +396,20 @@ final class JellyfinService {
         serverName = defaults.string(forKey: Keys.serverName)
         userID = defaults.string(forKey: Keys.userID)
         username = defaults.string(forKey: Keys.username)
+        hasLiveTV = defaults.bool(forKey: Keys.hasLiveTV)
+    }
+
+    /// Live TV is a server-side add-on: without a tuner or an M3U source
+    /// configured the endpoints answer, but there is nothing behind them. This
+    /// is what keeps the tab from being offered when there's nothing to watch.
+    private func refreshLiveTVAvailability() async {
+        guard let info = try? await send(Paths.getLiveTvInfo) else { return }
+
+        // Enabled on its own isn't enough — a server with the feature on and no
+        // service configured still has no channels.
+        let isAvailable = info.isEnabled == true && !(info.services ?? []).isEmpty
+        hasLiveTV = isAvailable
+        defaults.set(isAvailable, forKey: Keys.hasLiveTV)
     }
 
     /// Checks the saved token against the server. A rejection (e.g. expired token)
@@ -379,6 +427,8 @@ final class JellyfinService {
             defaults.set(user.id, forKey: Keys.userID)
             defaults.set(user.name, forKey: Keys.username)
             isOffline = false
+
+            await refreshLiveTVAvailability()
         } catch {
             if Self.isAuthFailure(error) {
                 // The token was rejected — back to the connect screen.

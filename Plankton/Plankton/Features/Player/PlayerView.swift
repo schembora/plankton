@@ -47,7 +47,10 @@ struct PlayerContainerView: View {
                         // AVKit arrives with a scrubber and transport; an engine
                         // drawing into a bare layer has none.
                         if !session.engine.providesControls {
-                            PlayerControls(session: session, title: playback.metadata?.title) {
+                            // Title and live state come from the session, not
+                            // the item this opened with: changing channel
+                            // replaces what's playing underneath.
+                            PlayerControls(session: session) {
                                 dismiss()
                             }
                         }
@@ -65,9 +68,10 @@ struct PlayerContainerView: View {
     }
 
     /// Only server-backed playback reports; a local file played offline has
-    /// nothing to report to.
+    /// nothing to report to, and a live channel has no position worth keeping —
+    /// posting one would put a resume point on a stream nobody can resume.
     private var reporter: PlaybackReporter? {
-        guard let itemID = playback.itemID, jellyfin.isSignedIn else { return nil }
+        guard let itemID = playback.itemID, jellyfin.isSignedIn, !playback.isLive else { return nil }
         return PlaybackReporter(jellyfin: jellyfin, itemID: itemID)
     }
 
@@ -80,6 +84,7 @@ struct PlayerContainerView: View {
             playback: playback,
             engineKind: playback.engine,
             settings: settings,
+            jellyfin: jellyfin,
             reporter: reporter
         )
         session.start(artwork: images) { message in

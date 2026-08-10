@@ -44,6 +44,10 @@ struct DownloadCard: View {
         // works whenever the server is reachable.
         playback = PlaybackItem(
             url: url,
+            // The saved format decides the engine, not the setting. An
+            // original container is only mpv's to open; leaving this to
+            // default hands a Matroska file to AVPlayer, which can't demux it.
+            engine: downloads.requiredEngine(forItemID: media.itemID) ?? .server,
             itemID: media.itemID,
             metadata: NowPlayingMetadata(media, poster: downloads.posterFileURL(forItemID: media.itemID))
         )

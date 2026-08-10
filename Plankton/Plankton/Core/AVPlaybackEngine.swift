@@ -66,6 +66,14 @@ final class AVPlaybackEngine: PlaybackEngine {
         player.pause()
     }
 
+    func load(_ url: URL) {
+        // A previous failure was terminal for the stream that raised it, not
+        // for the engine — the replacement deserves its own verdict.
+        failureMessage = nil
+        player.replaceCurrentItem(with: AVPlayerItem(url: url))
+        player.play()
+    }
+
     func seek(to seconds: TimeInterval) {
         let target = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
         player.seek(to: target) { [weak self] _ in

@@ -28,6 +28,11 @@ struct MediaImage: View {
     /// of the flicker.
     var keepsPreviousWhileLoading = false
 
+    /// How the image fills its frame. Filling suits artwork that was composed
+    /// to be cropped — posters, backdrops, stills. A channel logo is a mark on
+    /// a transparent ground with no safe area to lose, so those want `.fit`.
+    var contentMode: ContentMode = .fill
+
     @State private var image: UIImage?
     @State private var didFail = false
 
@@ -36,7 +41,7 @@ struct MediaImage: View {
             if let image {
                 Image(uiImage: image)
                     .resizable()
-                    .scaledToFill()
+                    .aspectRatio(contentMode: contentMode)
                     .transition(.opacity)
             } else {
                 placeholder

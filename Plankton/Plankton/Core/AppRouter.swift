@@ -74,7 +74,7 @@ enum DownloadsRoute: Hashable {
 final class AppRouter {
 
     enum Tab: Hashable {
-        case home, library, downloads, settings
+        case home, library, liveTV, downloads, settings
     }
 
     var selectedTab: Tab = .home

@@ -5,6 +5,7 @@
 //  Transport controls for engines that don't bring their own.
 //
 
+import JellyfinAPI
 import SwiftUI
 
 /// How long the controls stay up after the last touch.
@@ -42,14 +43,17 @@ enum SubtitleScale: Double, CaseIterable, Identifiable {
     }
 }
 
-/// The chrome AVKit would have supplied: scrubber, transport, timings and a way
-/// out. Shown only over engines that draw into a bare layer.
+/// The chrome AVKit would have supplied: transport, track pickers, a timeline
+/// and a way out. Shown only over engines that draw into a bare layer.
 struct PlayerControls: View {
 
     @Bindable var session: PlaybackSession
 
-    let title: String?
     let onClose: () -> Void
+
+    /// Skipping is the only part of the transport that depends on this; where
+    /// the playhead sits is `PlaybackTimeline`'s business.
+    private var isLive: Bool { session.isLive }
 
     @State private var isVisible = true
     @State private var hideTask: Task<Void, Never>?
@@ -70,7 +74,15 @@ struct PlayerControls: View {
                     Spacer(minLength: 0)
                     transport
                     Spacer(minLength: 0)
-                    scrubber
+                    PlaybackTimeline(session: session) { isScrubbing in
+                        // A drag holds the chrome open; letting go restarts
+                        // the clock that hides it.
+                        if isScrubbing {
+                            hideTask?.cancel()
+                        } else {
+                            scheduleHide()
+                        }
+                    }
                 }
                 .padding(20)
                 .transition(.opacity)
@@ -95,20 +107,68 @@ struct PlayerControls: View {
             }
             .accessibilityLabel("Close")
 
-            if let title {
-                Text(title)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .shadow(radius: 4)
+            VStack(alignment: .leading, spacing: 1) {
+                if let title = session.title {
+                    Text(title)
+                        .font(.headline)
+                        .lineLimit(1)
+                }
+
+                // What's on, under what it's on. Only live carries one today.
+                if let subtitle = session.subtitle {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
+            .shadow(radius: 4)
 
             Spacer(minLength: 0)
+
+            // Only where there's a line-up to move around in.
+            if session.channels.count > 1 {
+                channelMenu
+            }
 
             // Nothing to choose between on a file with no subtitles.
             if !session.subtitleTracks.isEmpty {
                 subtitleMenu
             }
         }
+    }
+
+    /// Changes channel without leaving the player. The engine is kept and
+    /// handed a new stream, so this costs a re-buffer rather than a restart.
+    private var channelMenu: some View {
+        Menu {
+            ForEach(session.channels) { channel in
+                Button {
+                    scheduleHide()
+                    Task { await session.switchTo(channel) }
+                } label: {
+                    let name = [channel.channelNumber, channel.name].metadataLine ?? "Channel"
+
+                    // A Label with an empty symbol name isn't an unmarked row,
+                    // it's a lookup for a symbol called "".
+                    if channel.id == session.current.itemID {
+                        Label(name, systemImage: "checkmark")
+                    } else {
+                        Text(name)
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "list.bullet")
+                .font(.headline)
+                .padding(12)
+                .glassEffect(.regular, in: .circle)
+                // Says a change is in flight, since the picture keeps showing
+                // the old channel until the new stream opens.
+                .opacity(session.isSwitching ? 0.4 : 1)
+        }
+        .disabled(session.isSwitching)
+        .accessibilityLabel("Channels")
     }
 
     private var subtitleMenu: some View {
@@ -160,7 +220,11 @@ struct PlayerControls: View {
 
     private var transport: some View {
         HStack(spacing: 44) {
-            skipButton("gobackward.15", by: -skipInterval)
+            // Skipping needs somewhere to skip to. A live stream has no
+            // timeline behind or ahead of the playhead.
+            if !isLive {
+                skipButton("gobackward.15", by: -skipInterval)
+            }
 
             Button(action: act(session.togglePlayPause)) {
                 Image(systemName: session.isPlaying ? "pause.fill" : "play.fill")
@@ -170,7 +234,9 @@ struct PlayerControls: View {
             }
             .accessibilityLabel(session.isPlaying ? "Pause" : "Play")
 
-            skipButton("goforward.15", by: skipInterval)
+            if !isLive {
+                skipButton("goforward.15", by: skipInterval)
+            }
         }
     }
 
@@ -184,48 +250,7 @@ struct PlayerControls: View {
         .accessibilityLabel(seconds < 0 ? "Skip back 15 seconds" : "Skip forward 15 seconds")
     }
 
-    private var scrubber: some View {
-        VStack(spacing: 4) {
-            Slider(
-                value: Binding(
-                    // The engine's clock can overshoot the reported duration by
-                    // a frame or two at the end of a file; the slider must not
-                    // be handed a value outside its own range.
-                    get: { min(session.position, session.duration ?? 1) },
-                    set: { session.scrub(to: $0) }
-                ),
-                // A track needs a positive range even before the duration is
-                // known, or the slider renders as a dead line.
-                in: 0...(session.duration ?? 1),
-                onEditingChanged: scrubbingChanged
-            )
-            .disabled(session.duration == nil)
-
-            HStack {
-                Text(Self.timeText(session.position))
-                Spacer()
-                if let duration = session.duration {
-                    Text("-" + Self.timeText(duration - session.position))
-                }
-            }
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.secondary)
-        }
-        .tint(.white)
-    }
-
     // MARK: - Behaviour
-
-    private func scrubbingChanged(_ isScrubbing: Bool) {
-        session.isScrubbing = isScrubbing
-
-        if isScrubbing {
-            hideTask?.cancel()
-        } else {
-            session.seek(to: session.position)
-            scheduleHide()
-        }
-    }
 
     /// Wraps a control's action so using it also keeps the controls up.
     private func act(_ action: @escaping () -> Void) -> () -> Void {
@@ -254,14 +279,4 @@ struct PlayerControls: View {
         }
     }
 
-    static func timeText(_ seconds: TimeInterval) -> String {
-        guard seconds.isFinite, seconds >= 0 else { return "--:--" }
-
-        let total = Int(seconds.rounded())
-        let (hours, minutes, remainder) = (total / 3600, (total % 3600) / 60, total % 60)
-
-        return hours > 0
-            ? String(format: "%d:%02d:%02d", hours, minutes, remainder)
-            : String(format: "%d:%02d", minutes, remainder)
-    }
 }
