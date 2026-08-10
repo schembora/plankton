@@ -26,6 +26,11 @@ final class PlaybackLauncher {
     var errorMessage: String?
     private(set) var isPreparing = false
 
+    /// Which item is being negotiated. A list needs this to show progress on
+    /// the row that was tapped: keying off `isPreparing` alone dims every row
+    /// at once, which reads as though the whole list had been selected.
+    private(set) var preparingItemID: String?
+
     /// - Parameter channels: the line-up this item belongs to, when it's a live
     ///   channel. Carried into the player so it can change channel in place.
     func play(
@@ -66,6 +71,7 @@ final class PlaybackLauncher {
 
         guard !isPreparing else { return }
         isPreparing = true
+        preparingItemID = item.id
 
         Task {
             let source = await jellyfin.playbackSource(
@@ -76,6 +82,7 @@ final class PlaybackLauncher {
                 maxBitrate: settings.maxBitrate(expensive: jellyfin.isOnExpensiveNetwork)
             )
             isPreparing = false
+            preparingItemID = nil
 
             if let source {
                 playback = PlaybackItem(

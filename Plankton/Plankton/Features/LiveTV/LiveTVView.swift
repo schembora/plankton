@@ -57,10 +57,12 @@ struct LiveTVView: View {
                     channels: channels
                 )
             } label: {
-                ChannelRow(channel: channel)
+                // Progress belongs on the row that was tapped. Disabling the
+                // whole list while one channel opens dims every row, which
+                // reads as though all of them had been selected.
+                ChannelRow(channel: channel, isStarting: launcher.preparingItemID == channel.id)
             }
             .buttonStyle(.plain)
-            .disabled(launcher.isPreparing)
         }
         .listStyle(.plain)
     }
@@ -86,14 +88,16 @@ struct LiveTVView: View {
 private struct ChannelRow: View {
 
     let channel: BaseItemDto
+    var isStarting = false
 
     var body: some View {
         HStack(spacing: 12) {
-            // Channel logos are wide marks on a transparent ground, not
-            // posters, so they get a fixed box to sit in rather than a crop.
-            MediaImage(artwork: channel.artwork(.primary, maxWidth: 160))
-                .frame(width: 56, height: 56)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            // Logos are wide marks on a transparent ground, not posters. They
+            // have no safe area to crop into, so the box holds the whole mark
+            // and lets it letterbox rather than filling and cutting the middle
+            // out of it.
+            MediaImage(artwork: channel.artwork(.primary, maxWidth: 160), contentMode: .fit)
+                .frame(width: 64, height: 48)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text([channel.channelNumber, channel.name].metadataLine ?? "Channel")
@@ -111,9 +115,15 @@ private struct ChannelRow: View {
 
             Spacer(minLength: 8)
 
-            Image(systemName: "play.circle.fill")
-                .font(.title3)
-                .foregroundStyle(.secondary)
+            // Opening a channel takes a moment: the server has to open the
+            // live stream before anything can play.
+            if isStarting {
+                ProgressView()
+            } else {
+                Image(systemName: "play.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(.vertical, 4)
     }
