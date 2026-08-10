@@ -41,7 +41,7 @@ struct PlaybackItem: Identifiable {
     /// the list it was opened from: a channel line-up, or the episodes around
     /// this one. Empty where there is nowhere to move to, which is what keeps
     /// the controls out of an ordinary player.
-    var queue: [BaseItemDto] = []
+    var queue: [PlaybackQueueEntry] = []
 }
 
 struct ItemDetailView: View {

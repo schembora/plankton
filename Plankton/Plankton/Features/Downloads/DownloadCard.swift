@@ -40,17 +40,31 @@ struct DownloadCard: View {
 
     private func play() {
         guard let url = downloads.localURL(forItemID: media.itemID) else { return }
+        // The saved format decides the engine, not the setting. An original
+        // container is only mpv's to open; leaving this to default hands a
+        // Matroska file to AVPlayer, which can't demux it.
+        let engine = downloads.requiredEngine(forItemID: media.itemID) ?? .server
+
         // Downloads have no cached watch position, but reporting still
         // works whenever the server is reachable.
         playback = PlaybackItem(
             url: url,
-            // The saved format decides the engine, not the setting. An
-            // original container is only mpv's to open; leaving this to
-            // default hands a Matroska file to AVPlayer, which can't demux it.
-            engine: downloads.requiredEngine(forItemID: media.itemID) ?? .server,
+            engine: engine,
             itemID: media.itemID,
-            metadata: NowPlayingMetadata(media, poster: downloads.posterFileURL(forItemID: media.itemID))
+            metadata: NowPlayingMetadata(media, poster: downloads.posterFileURL(forItemID: media.itemID)),
+            queue: siblings.asQueueEntries(playableOn: engine, in: downloads)
         )
+    }
+
+    /// The rest of this series on disk, in episode order. Empty for a movie,
+    /// which is what keeps the queue controls out of a film's player.
+    private var siblings: [DownloadedMedia] {
+        guard let groupID = media.seriesGroupID else { return [] }
+        return downloads.media
+            .filter { $0.seriesGroupID == groupID }
+            .sorted {
+                ($0.seasonNumber ?? 0, $0.episodeNumber ?? 0) < ($1.seasonNumber ?? 0, $1.episodeNumber ?? 0)
+            }
     }
 }
 

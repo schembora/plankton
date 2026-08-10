@@ -65,7 +65,11 @@ final class PlaybackLauncher {
                 engine: required ?? engine,
                 itemID: itemID,
                 startTicks: item.resumePositionTicks,
-                metadata: NowPlayingMetadata(item)
+                metadata: NowPlayingMetadata(item),
+                // Carried into the local case too. Dropping it here was what
+                // left a downloaded episode with no way to reach the next one
+                // even when the season around it was known.
+                queue: queue.asQueueEntries
             )
             return
         }
@@ -94,7 +98,7 @@ final class PlaybackLauncher {
                     itemID: item.id,
                     startTicks: item.resumePositionTicks,
                     metadata: NowPlayingMetadata(item),
-                    queue: queue
+                    queue: queue.asQueueEntries
                 )
             } else {
                 errorMessage = "This video isn't playable. The server may not support transcoding for it."

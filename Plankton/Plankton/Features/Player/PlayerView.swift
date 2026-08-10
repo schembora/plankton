@@ -19,6 +19,7 @@ struct PlayerContainerView: View {
 
     @Environment(JellyfinService.self) private var jellyfin
     @Environment(PlaybackSettings.self) private var settings
+    @Environment(DownloadService.self) private var downloads
     @Environment(ImageCache.self) private var images
     @Environment(\.dismiss) private var dismiss
 
@@ -76,7 +77,8 @@ struct PlayerContainerView: View {
             playback: playback,
             engineKind: playback.engine,
             settings: settings,
-            jellyfin: jellyfin
+            jellyfin: jellyfin,
+            downloads: downloads
         )
         session.start(artwork: images) { message in
             errorMessage = message

@@ -173,16 +173,23 @@ struct SeriesDownloadsView: View {
 
     private func play(_ media: DownloadedMedia) {
         guard let url = downloads.localURL(forItemID: media.itemID) else { return }
+        // The saved format decides the engine, not the setting. An original
+        // container is only mpv's to open; leaving this to default hands a
+        // Matroska file to AVPlayer, which can't demux it.
+        let engine = downloads.requiredEngine(forItemID: media.itemID) ?? .server
+
         // Downloads have no cached watch position, but reporting still
         // works whenever the server is reachable.
         playback = PlaybackItem(
             url: url,
-            // The saved format decides the engine, not the setting. An
-            // original container is only mpv's to open; leaving this to
-            // default hands a Matroska file to AVPlayer, which can't demux it.
-            engine: downloads.requiredEngine(forItemID: media.itemID) ?? .server,
+            engine: engine,
             itemID: media.itemID,
-            metadata: NowPlayingMetadata(media, poster: downloads.posterFileURL(forItemID: media.itemID))
+            metadata: NowPlayingMetadata(media, poster: downloads.posterFileURL(forItemID: media.itemID)),
+            // Everything downloaded from this series, not just the season on
+            // screen. The set is one the user picked deliberately, and
+            // stopping at a season boundary with the next one already on disk
+            // is the more annoying way to be wrong.
+            queue: episodes.asQueueEntries(playableOn: engine, in: downloads)
         )
     }
 }

@@ -18,6 +18,8 @@ import SwiftUI
 /// episode by its still, a channel by its logo and what's on.
 struct PlayerQueueStrip: View {
 
+    @Environment(DownloadService.self) private var downloads
+
     @Bindable var session: PlaybackSession
 
     /// Fires on every pick, so the chrome's hide timer restarts rather than
@@ -28,21 +30,15 @@ struct PlayerQueueStrip: View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 12) {
-                    ForEach(session.queue) { item in
+                    ForEach(session.queue) { entry in
                         Button {
                             onInteraction()
-                            Task { await session.switchTo(item) }
+                            Task { await session.switchTo(entry) }
                         } label: {
-                            let isCurrent = item.id == session.current.itemID
-
-                            if item.isLiveChannel {
-                                ChannelTile(channel: item, isCurrent: isCurrent)
-                            } else {
-                                EpisodeTile(episode: item, isCurrent: isCurrent, width: 160)
-                            }
+                            tile(for: entry, isCurrent: entry.itemID == session.current.itemID)
                         }
                         .buttonStyle(.plain)
-                        .id(item.id)
+                        .id(entry.id)
                     }
                 }
                 .scrollTargetLayout()
@@ -55,6 +51,34 @@ struct PlayerQueueStrip: View {
                 guard let itemID = session.current.itemID else { return }
                 withAnimation { proxy.scrollTo(itemID, anchor: .center) }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func tile(for entry: PlaybackQueueEntry, isCurrent: Bool) -> some View {
+        if let channel = entry.channel {
+            ChannelTile(channel: channel, isCurrent: isCurrent)
+        } else {
+            EpisodeTile(
+                artwork: artwork(for: entry),
+                label: entry.episodeLabel,
+                title: entry.title,
+                progress: entry.watchedProgress,
+                isCurrent: isCurrent,
+                width: 160
+            )
+        }
+    }
+
+    /// A download's art comes off the disk, so the strip draws the same way
+    /// with no server to ask. No poster fallback: the saved 2:3 cover crops
+    /// badly in a 16:9 tile, and the placeholder reads better than that does.
+    private func artwork(for entry: PlaybackQueueEntry) -> Artwork? {
+        switch entry {
+        case let .server(item):
+            item.artwork(.episodeStill, maxWidth: 500)
+        case let .downloaded(media):
+            .local(downloads.backdropFileURL(forItemID: media.itemID))
         }
     }
 }

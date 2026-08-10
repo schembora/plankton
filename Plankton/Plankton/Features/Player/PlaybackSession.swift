@@ -59,14 +59,14 @@ final class PlaybackSession {
 
     /// What else this playthrough can move to. A channel line-up, or the
     /// episodes around this one.
-    var queue: [BaseItemDto] { current.queue }
+    var queue: [PlaybackQueueEntry] { current.queue }
 
     /// Where `current` sits in the queue, when it's in there at all. Matched by
     /// item rather than held as an index, so it survives the queue being
     /// reloaded underneath.
     var queueIndex: Int? {
         guard let itemID = current.itemID else { return nil }
-        return queue.firstIndex { $0.id == itemID }
+        return queue.firstIndex { $0.itemID == itemID }
     }
 
     var hasPreviousInQueue: Bool { (queueIndex ?? 0) > 0 }
@@ -74,6 +74,11 @@ final class PlaybackSession {
 
     @ObservationIgnored private let settings: PlaybackSettings
     @ObservationIgnored private let jellyfin: JellyfinService
+
+    /// Consulted on every move through the queue, not just at launch: the next
+    /// episode may be on disk even when this one was streamed, and offline it
+    /// is the only thing that can answer.
+    @ObservationIgnored private let downloads: DownloadService
 
     /// The engine this session was built on. Moving through the queue
     /// negotiates against it rather than the current preference: the surface
@@ -97,12 +102,14 @@ final class PlaybackSession {
         playback: PlaybackItem,
         engineKind: PlaybackEngineKind,
         settings: PlaybackSettings,
-        jellyfin: JellyfinService
+        jellyfin: JellyfinService,
+        downloads: DownloadService
     ) {
         current = playback
         self.engineKind = engineKind
         self.settings = settings
         self.jellyfin = jellyfin
+        self.downloads = downloads
         engine = engineKind.makeEngine(url: playback.url)
         surface = engine.makeSurface()
         reporter = Self.makeReporter(for: playback, jellyfin: jellyfin)
@@ -237,7 +244,7 @@ final class PlaybackSession {
     /// would pay mpv's whole startup on every change. The outgoing stream is
     /// released first, since holding two open ties up a tuner that nothing
     /// will ever come back for.
-    func switchTo(_ item: BaseItemDto) async {
+    func switchTo(_ entry: PlaybackQueueEntry) async {
         guard !isSwitching else { return }
         isSwitching = true
         defer { isSwitching = false }
@@ -248,25 +255,8 @@ final class PlaybackSession {
         endReporting()
         releaseLiveStream()
 
-        // Negotiated against the engine already running, not the preference.
-        // The surface was built for it and can't be swapped mid-playthrough.
-        let source = await jellyfin.playbackSource(
-            for: item,
-            engine: engineKind,
-            maxBitrate: settings.maxBitrate(expensive: jellyfin.isOnExpensiveNetwork)
-        )
-        guard let source else { return }
-
-        current = PlaybackItem(
-            url: source.url,
-            engine: engineKind,
-            isLive: source.isLive,
-            liveStreamID: source.liveStreamID,
-            itemID: item.id,
-            startTicks: item.resumePositionTicks,
-            metadata: NowPlayingMetadata(item),
-            queue: current.queue
-        )
+        guard let next = await resolve(entry) else { return }
+        current = next
 
         // The lock screen is still showing what we just left.
         nowPlaying.stop()
@@ -274,13 +264,87 @@ final class PlaybackSession {
             nowPlaying.start(metadata, for: engine, artwork: artwork)
         }
 
-        engine.load(source.url, startingAt: current.startTicks.map(PlaybackReporter.seconds(fromTicks:)))
+        engine.load(current.url, startingAt: current.startTicks.map(PlaybackReporter.seconds(fromTicks:)))
 
         reporter = Self.makeReporter(for: current, jellyfin: jellyfin)
         beginReporting()
 
         refresh()
         refreshTracks()
+    }
+
+    /// Where the next thing to play comes from.
+    ///
+    /// A downloaded copy is preferred for server entries too, which is what
+    /// lets a part-downloaded season keep moving while offline: the queue is
+    /// the same list either way, and each stop resolves to whichever source
+    /// can actually answer for it.
+    private func resolve(_ entry: PlaybackQueueEntry) async -> PlaybackItem? {
+        switch entry {
+        case let .downloaded(media):
+            return localItem(
+                for: media.itemID,
+                metadata: NowPlayingMetadata(
+                    media,
+                    poster: downloads.posterFileURL(forItemID: media.itemID)
+                )
+            )
+
+        case let .server(item):
+            if let itemID = item.id,
+               let local = localItem(
+                   for: itemID,
+                   startTicks: item.resumePositionTicks,
+                   metadata: NowPlayingMetadata(item)
+               ) {
+                return local
+            }
+
+            // Negotiated against the engine already running, not the
+            // preference. The surface was built for it and can't be swapped
+            // mid-playthrough.
+            let source = await jellyfin.playbackSource(
+                for: item,
+                engine: engineKind,
+                maxBitrate: settings.maxBitrate(expensive: jellyfin.isOnExpensiveNetwork)
+            )
+            guard let source else { return nil }
+
+            return PlaybackItem(
+                url: source.url,
+                engine: engineKind,
+                isLive: source.isLive,
+                liveStreamID: source.liveStreamID,
+                itemID: item.id,
+                startTicks: item.resumePositionTicks,
+                metadata: NowPlayingMetadata(item),
+                queue: current.queue
+            )
+        }
+    }
+
+    /// The download for an item, when there is one the running engine can
+    /// open. A file in the other engine's format is left alone rather than
+    /// forced through this one: the surface exists for the whole playthrough,
+    /// so a server entry falls back to streaming and a downloaded entry
+    /// simply can't be reached.
+    private func localItem(
+        for itemID: String,
+        startTicks: Int? = nil,
+        metadata: NowPlayingMetadata?
+    ) -> PlaybackItem? {
+        guard let url = downloads.localURL(forItemID: itemID),
+              downloads.requiredEngine(forItemID: itemID) == engineKind
+        else { return nil }
+
+        return PlaybackItem(
+            url: url,
+            engine: engineKind,
+            itemID: itemID,
+            startTicks: startTicks,
+            metadata: metadata,
+            queue: current.queue
+        )
     }
 
     /// Moves through the queue. For a channel line-up these are channel down
