@@ -20,6 +20,12 @@ struct DownloadsView: View {
     @State private var storageUsed: Int64 = 0
     @State private var isConfirmingDelete = false
 
+    /// Below a megabyte there is no media left, only the index file and the
+    /// empty directories it sits beside — a cleared download folder still
+    /// costs a few kilobytes. Reporting that would put a Delete All on screen
+    /// that frees nothing.
+    private var hasStoredMedia: Bool { storageUsed > 1_000_000 }
+
     /// One grid entry: a single movie, or a series grouping its episodes.
     private enum Entry: Identifiable {
         case movie(DownloadedMedia)
@@ -95,7 +101,7 @@ struct DownloadsView: View {
                 storageFooter
             }
             .overlay {
-                if downloads.media.isEmpty && storageUsed == 0 {
+                if downloads.media.isEmpty && !hasStoredMedia {
                     ContentUnavailableView {
                         Label("No Downloads", systemImage: "arrow.down.circle")
                     } description: {
@@ -127,13 +133,13 @@ struct DownloadsView: View {
         }
     }
 
-    /// Shown whenever the app is holding storage — including when the grid is
-    /// empty, which is the case worth having it for. Downloads live in
-    /// Application Support, so a file the index lost can't be reached from the
-    /// Files app either; this is the only way to be rid of it.
+    /// Shown whenever media is on disk — including when the grid is empty,
+    /// which is the case worth having it for. Downloads live in Application
+    /// Support, so a file the index lost can't be reached from the Files app
+    /// either; this is the only way to be rid of it.
     @ViewBuilder
     private var storageFooter: some View {
-        if storageUsed > 0 {
+        if hasStoredMedia {
             VStack(spacing: 8) {
                 Text("\(DownloadService.sizeText(storageUsed)) used")
                     .font(.footnote)
