@@ -139,6 +139,33 @@ extension BaseItemDto {
         type == .tvChannel || type == .liveTvChannel
     }
 
+    /// True while a programme is on air.
+    var isAiringNow: Bool {
+        guard let startDate, let endDate else { return false }
+        let now = Date()
+        return startDate <= now && now < endDate
+    }
+
+    /// How far through a programme we are as 0...1, or nil when it isn't on.
+    /// Drives the bar that says how much of it you've already missed.
+    var airingProgress: Double? {
+        guard isAiringNow, let startDate, let endDate else { return nil }
+
+        let length = endDate.timeIntervalSince(startDate)
+        guard length > 0 else { return nil }
+        return min(max(Date().timeIntervalSince(startDate) / length, 0), 1)
+    }
+
+    /// When a programme starts, in whatever clock the reader uses.
+    var airingStartText: String? {
+        startDate?.formatted(date: .omitted, time: .shortened)
+    }
+
+    /// e.g. "until 9:00 PM" — when what's on now gives way to what's next.
+    var airingEndText: String? {
+        endDate.map { "until \($0.formatted(date: .omitted, time: .shortened))" }
+    }
+
     /// e.g. "S2 E4" for episodes.
     var episodeLabel: String? {
         guard type == .episode else { return nil }

@@ -2,11 +2,15 @@
 //  LiveTVView.swift
 //  Plankton
 //
-//  The channel line-up, and what's on each one right now.
+//  The guide: every channel, what's on it now, and what's on next.
 //
 
 import JellyfinAPI
 import SwiftUI
+
+/// How far ahead the guide asks for. Matches the grid's own window, with a
+/// little slack so the last column isn't empty.
+private let guideWindow: TimeInterval = 7 * 60 * 60
 
 struct LiveTVView: View {
 
@@ -15,6 +19,11 @@ struct LiveTVView: View {
     @Environment(PlaybackSettings.self) private var playback
 
     @State private var channels: [BaseItemDto] = []
+
+    /// Programmes for the window ahead, keyed by the channel they're on.
+    @State private var programmes: [String: [BaseItemDto]] = [:]
+
+    @State private var query = ""
     @State private var isLoading = true
     @State private var launcher = PlaybackLauncher()
 
@@ -33,44 +42,81 @@ struct LiveTVView: View {
                         systemImage: "antenna.radiowaves.left.and.right.slash",
                         description: Text("Your server has Live TV set up, but isn't offering any channels.")
                     )
+                } else if visibleChannels.isEmpty {
+                    ContentUnavailableView.search(text: query)
                 } else {
-                    channelList
+                    guide
                 }
             }
             .navigationTitle("Live TV")
+            .navigationBarTitleDisplayMode(.inline)
+            // Always shown rather than revealed by scrolling: the grid scrolls
+            // in two directions, and a search field that collapses with it
+            // slides around under the pinned header.
+            .searchable(
+                text: $query,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: "Channels and programmes"
+            )
             .task { await load() }
-            .refreshable { await load() }
         }
         .playbackPresentation(launcher)
     }
 
-    private var channelList: some View {
-        List(channels) { channel in
-            Button {
-                // The whole line-up goes with it, so the player can change
-                // channel without coming back here and rebuilding the engine.
-                launcher.play(
-                    channel,
-                    jellyfin: jellyfin,
-                    downloads: downloads,
-                    settings: playback,
-                    queue: channels
-                )
-            } label: {
-                // Progress belongs on the row that was tapped. Disabling the
-                // whole list while one channel opens dims every row, which
-                // reads as though all of them had been selected.
-                ChannelRow(channel: channel, isStarting: launcher.preparingItemID == channel.id)
-            }
-            .buttonStyle(.plain)
+    private var guide: some View {
+        LiveTVGuide(
+            channels: visibleChannels,
+            listings: programmes,
+            startingChannelID: launcher.preparingItemID,
+            onRefresh: load
+        ) { channel in
+            // Only what's on screen goes with it, so channel up and down in
+            // the player walk the same line-up that was being read.
+            launcher.play(
+                channel,
+                jellyfin: jellyfin,
+                downloads: downloads,
+                settings: playback,
+                queue: visibleChannels
+            )
         }
-        .listStyle(.plain)
     }
 
-    /// Channels come back as ordinary items, so the existing artwork and
-    /// display helpers apply. `isAddCurrentProgram` is what fills in what's on
-    /// now — without it a channel is just a name.
+    // MARK: - Guide data
+
+    /// Matches a channel by number or name, and the programmes on it by title
+    /// — so "what channel is the football on" is one search rather than
+    /// scrolling the line-up looking for it.
+    private var visibleChannels: [BaseItemDto] {
+        let term = query.trimmingCharacters(in: .whitespaces)
+        guard !term.isEmpty else { return channels }
+
+        return channels.filter { channel in
+            let names = [channel.channelNumber, channel.name]
+            if names.contains(where: { $0?.localizedCaseInsensitiveContains(term) == true }) {
+                return true
+            }
+            return listings(for: channel).contains {
+                $0.name?.localizedCaseInsensitiveContains(term) == true
+            }
+        }
+    }
+
+    private func listings(for channel: BaseItemDto) -> [BaseItemDto] {
+        channel.id.flatMap { programmes[$0] } ?? []
+    }
+
+    // MARK: - Loading
+
     private func load() async {
+        await loadChannels()
+        await loadListings()
+        isLoading = false
+    }
+
+    /// `isAddCurrentProgram` is what fills in what's on now — without it a
+    /// channel is just a name.
+    private func loadChannels() async {
         var parameters = Paths.GetLiveTvChannelsParameters()
         parameters.userID = jellyfin.userID
         parameters.isAddCurrentProgram = true
@@ -80,51 +126,33 @@ struct LiveTVView: View {
 
         let result = try? await jellyfin.send(Paths.getLiveTvChannels(parameters: parameters))
         channels = result?.items ?? []
-        isLoading = false
     }
-}
 
-/// A channel and whatever it's showing at the moment.
-private struct ChannelRow: View {
+    /// One request for the whole line-up rather than one per channel, bounded
+    /// to the window ahead: anything still running now, or starting inside it.
+    private func loadListings() async {
+        let channelIDs = channels.compactMap(\.id)
+        guard !channelIDs.isEmpty else { return }
 
-    let channel: BaseItemDto
-    var isStarting = false
+        let now = Date()
+        var parameters = Paths.GetLiveTvProgramsParameters()
+        parameters.userID = jellyfin.userID
+        parameters.channelIDs = channelIDs
+        // Back an hour, not from now: the grid starts at the half hour on or
+        // before the moment you looked, so anything that ended earlier in that
+        // slot still belongs on screen. Asking from now leaves a hole at the
+        // left of every row for most of each half hour.
+        parameters.minEndDate = now.addingTimeInterval(-60 * 60)
+        parameters.maxStartDate = now.addingTimeInterval(guideWindow)
+        parameters.sortBy = [.startDate]
+        // Without these the programmes come back with no image tags and no
+        // description, and the selection readout has nothing to show.
+        parameters.enableImageTypes = [.primary, .thumb]
+        parameters.fields = [.overview]
 
-    var body: some View {
-        HStack(spacing: 12) {
-            // Logos are wide marks on a transparent ground, not posters. They
-            // have no safe area to crop into, so the box holds the whole mark
-            // and lets it letterbox rather than filling and cutting the middle
-            // out of it.
-            MediaImage(artwork: channel.artwork(.primary, maxWidth: 160), contentMode: .fit)
-                .frame(width: 64, height: 48)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text([channel.channelNumber, channel.name].metadataLine ?? "Channel")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                    .lineLimit(1)
-
-                if let program = channel.currentProgram {
-                    Text(program.name ?? "")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-
-            Spacer(minLength: 8)
-
-            // Opening a channel takes a moment: the server has to open the
-            // live stream before anything can play.
-            if isStarting {
-                ProgressView()
-            } else {
-                Image(systemName: "play.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-            }
+        guard let result = try? await jellyfin.send(Paths.getLiveTvPrograms(parameters: parameters)) else {
+            return
         }
-        .padding(.vertical, 4)
+        programmes = Dictionary(grouping: result.items ?? []) { $0.channelID ?? "" }
     }
 }
