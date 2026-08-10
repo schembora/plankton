@@ -165,11 +165,36 @@ struct PlayerControls: View {
                 channelMenu
             }
 
+            // Live puts channel up and down in the transport, where a
+            // recording keeps its skip buttons — so next episode lives here
+            // instead of crowding that row with a fifth control.
+            if !isLive, session.hasNextInQueue {
+                nextInQueueButton
+            }
+
             // Nothing to choose between on a file with no subtitles.
             if !session.subtitleTracks.isEmpty {
                 subtitleMenu
             }
         }
+    }
+
+    /// Plays the next episode without leaving the player. Reuses the engine,
+    /// so it costs a re-buffer rather than mpv's whole startup, and it resumes
+    /// wherever the server says that episode was left.
+    private var nextInQueueButton: some View {
+        Button {
+            scheduleHide()
+            Task { await session.goToNextInQueue() }
+        } label: {
+            Image(systemName: "forward.end.fill")
+                .font(.headline)
+                .padding(12)
+                .glassEffect(.clear.interactive(), in: .circle)
+                .opacity(session.isSwitching ? 0.4 : 1)
+        }
+        .disabled(session.isSwitching)
+        .accessibilityLabel("Next episode")
     }
 
     /// Changes channel without leaving the player. The engine is kept and

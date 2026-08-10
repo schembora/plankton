@@ -339,7 +339,15 @@ struct ItemDetailView: View {
     // MARK: - Playback & URLs
 
     private func play(_ item: BaseItemDto) {
-        launcher.play(item, jellyfin: jellyfin, downloads: downloads, settings: playback)
+        // The season around it, so the player can move on without coming
+        // back here. Empty for a movie, which is what keeps the control away.
+        launcher.play(
+            item,
+            jellyfin: jellyfin,
+            downloads: downloads,
+            settings: playback,
+            queue: episodes
+        )
     }
 
 }

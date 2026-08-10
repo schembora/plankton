@@ -143,7 +143,13 @@ struct EpisodeDetailView: View {
 
     private var playButton: some View {
         Button {
-            launcher.play(displayed, jellyfin: jellyfin, downloads: downloads, settings: playback)
+            launcher.play(
+                displayed,
+                jellyfin: jellyfin,
+                downloads: downloads,
+                settings: playback,
+                queue: seasonEpisodes
+            )
         } label: {
             Label(playLabel, systemImage: "play.fill")
                 .frame(maxWidth: .infinity)
