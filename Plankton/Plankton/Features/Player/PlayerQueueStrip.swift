@@ -8,11 +8,14 @@
 import JellyfinAPI
 import SwiftUI
 
-/// A horizontal run of what else this playthrough can reach.
+/// A horizontal run of what else this playthrough can reach: the rest of the
+/// season, or the channel line-up with what's on each one.
 ///
 /// Picking one swaps the stream inside the running engine, so moving through a
-/// season costs a re-buffer rather than closing the player and opening it
-/// again — which is the whole reason the queue exists.
+/// season or across a line-up costs a re-buffer rather than closing the player
+/// and opening it again — which is the whole reason the queue exists. One
+/// mechanism, two tiles, because what you need to recognise differs: an
+/// episode by its still, a channel by its logo and what's on.
 struct PlayerQueueStrip: View {
 
     @Bindable var session: PlaybackSession
@@ -30,11 +33,13 @@ struct PlayerQueueStrip: View {
                             onInteraction()
                             Task { await session.switchTo(item) }
                         } label: {
-                            EpisodeTile(
-                                episode: item,
-                                isCurrent: item.id == session.current.itemID,
-                                width: 160
-                            )
+                            let isCurrent = item.id == session.current.itemID
+
+                            if item.isLiveChannel {
+                                ChannelTile(channel: item, isCurrent: isCurrent)
+                            } else {
+                                EpisodeTile(episode: item, isCurrent: isCurrent, width: 160)
+                            }
                         }
                         .buttonStyle(.plain)
                         .id(item.id)

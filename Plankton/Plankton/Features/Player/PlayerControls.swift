@@ -14,6 +14,13 @@ private let autoHideDelay: Duration = .seconds(3.5)
 /// What the skip buttons jump, matching the lock screen's own interval.
 private let skipInterval: TimeInterval = 15
 
+/// Clear glass, darkened a touch.
+///
+/// Fully clear gives up its own contrast, and white glyphs disappear whenever
+/// the frame behind them goes bright. A little black in the tint keeps the
+/// transparency while giving them something to sit on.
+private let playerGlass: Glass = .clear.tint(.black.opacity(0.28))
+
 /// Preset subtitle sizes. Presets rather than a slider because a menu can't
 /// show a live preview, and picking a number blind is worse than picking a word.
 enum SubtitleScale: Double, CaseIterable, Identifiable {
@@ -36,6 +43,18 @@ enum SubtitleScale: Double, CaseIterable, Identifiable {
         }
     }
 
+    /// For the compact row in the subtitles panel, where five full words
+    /// wouldn't fit and the order carries the meaning anyway.
+    var shortTitle: String {
+        switch self {
+        case .small: "S"
+        case .medium: "M"
+        case .standard: "D"
+        case .large: "L"
+        case .larger: "XL"
+        }
+    }
+
     /// Maps a stored scale onto the closest preset, so a value written by an
     /// older build (or hand-edited) still selects something in the menu.
     static func nearest(to scale: Double) -> SubtitleScale {
@@ -55,8 +74,20 @@ struct PlayerControls: View {
     /// the playhead sits is `PlaybackTimeline`'s business.
     private var isLive: Bool { session.isLive }
 
+    /// The options panels, drawn by us rather than by `Menu`.
+    ///
+    /// A SwiftUI menu presents a UIKit context menu, which arrives in a light
+    /// material that looks foreign over video, and re-hosts the view tree the
+    /// video surface lives in — which is what UIKit complains about when it
+    /// reparents our representable.
+    private enum OptionsPanel: String, Identifiable {
+        case subtitles, videoSize
+        var id: String { rawValue }
+    }
+
     @State private var isVisible = true
     @State private var isShowingQueue = false
+    @State private var openPanel: OptionsPanel?
     @State private var hideTask: Task<Void, Never>?
 
     var body: some View {
@@ -108,6 +139,17 @@ struct PlayerControls: View {
 
                         optionsBar
                     }
+                    // Floated over the controls rather than placed among them:
+                    // in the layout flow it pushed the timeline up every time
+                    // a panel opened, which moved the scrubber out from under
+                    // whoever was reaching for it.
+                    .overlay(alignment: .bottomTrailing) {
+                        if let openPanel {
+                            panel(for: openPanel)
+                                .padding(.bottom, 60)
+                                .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .bottomTrailing)))
+                        }
+                    }
                 }
                 .padding(20)
                 // The controls cover the whole frame, so the catcher behind
@@ -116,7 +158,10 @@ struct PlayerControls: View {
                 // else — the video showing between them — lands on this.
                 .contentShape(.rect)
                 .onTapGesture {
-                    if isShowingQueue {
+                    if openPanel != nil {
+                        withAnimation(.easeInOut(duration: 0.2)) { openPanel = nil }
+                        scheduleHide()
+                    } else if isShowingQueue {
                         closeQueue()
                     } else {
                         toggle()
@@ -165,7 +210,7 @@ struct PlayerControls: View {
                 Image(systemName: "xmark")
                     .font(.headline)
                     .padding(12)
-                    .glassEffect(.clear.interactive(), in: .circle)
+                    .glassEffect(playerGlass.interactive(), in: .circle)
             }
             .accessibilityLabel("Close")
 
@@ -188,12 +233,6 @@ struct PlayerControls: View {
 
             Spacer(minLength: 0)
 
-            // Only where there's a line-up to move around in. The menu is
-            // the channel picker today; an episode queue gets its own.
-            if isLive, session.queue.count > 1 {
-                channelMenu
-            }
-
             // Live puts channel up and down in the transport, where a
             // recording keeps its skip buttons — so next episode lives here
             // instead of crowding that row with a fifth control.
@@ -201,7 +240,7 @@ struct PlayerControls: View {
                 nextInQueueButton
             }
 
-            if !isLive, session.queue.count > 1 {
+            if session.queue.count > 1 {
                 queueStripButton
             }
         }
@@ -216,10 +255,10 @@ struct PlayerControls: View {
 
             // Nothing to choose between on a file with no subtitles.
             if !session.subtitleTracks.isEmpty {
-                subtitleMenu
+                subtitleButton
             }
 
-            fillMenu
+            fillButton
         }
         .padding(.top, 8)
     }
@@ -227,24 +266,148 @@ struct PlayerControls: View {
     /// How the picture sits on screen. Always offered: whether it's useful
     /// depends on the shape of what's playing against the shape of the phone,
     /// and the player can't know that until frames arrive.
-    private var fillMenu: some View {
-        Menu {
-            Picker("Video Size", selection: $session.videoFill) {
-                ForEach(VideoFill.allCases) { fill in
-                    Text(fill.title).tag(fill)
-                }
-            }
-        } label: {
-            Image(systemName: session.videoFill == .fit ? "aspectratio" : "aspectratio.fill")
-                .font(.headline)
-                .padding(12)
-                .glassEffect(.clear.interactive(), in: .circle)
-        }
-        .accessibilityLabel("Video size")
+    private var subtitleButton: some View {
+        panelButton(
+            symbol: session.selectedSubtitleTrack == nil ? "captions.bubble" : "captions.bubble.fill",
+            label: "Subtitles",
+            panel: .subtitles
+        )
     }
 
-    /// Opens the rest of the season along the bottom. Next is the quick way
-    /// on; this is for picking somewhere else in it.
+    private var fillButton: some View {
+        panelButton(
+            symbol: session.videoFill == .fit ? "aspectratio" : "aspectratio.fill",
+            label: "Video size",
+            panel: .videoSize
+        )
+    }
+
+    private func panelButton(symbol: String, label: String, panel: OptionsPanel) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                openPanel = openPanel == panel ? nil : panel
+            }
+            scheduleHide()
+        } label: {
+            Image(systemName: symbol)
+                .font(.headline)
+                .padding(12)
+                .glassEffect(playerGlass.interactive(), in: .circle)
+        }
+        .accessibilityLabel(label)
+    }
+
+    /// Drawn by us rather than by `Menu`: the same clear glass as everything
+    /// else here, and nothing gets re-hosted to present it.
+    @ViewBuilder
+    private func panel(for panel: OptionsPanel) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            switch panel {
+            case .subtitles:
+                // Only the tracks scroll. Size is pinned below them, because a
+                // file with a dozen subtitle tracks would otherwise bury it.
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        optionRow("Off", isSelected: session.selectedSubtitleTrack == nil) {
+                            session.selectSubtitleTrack(nil)
+                        }
+
+                        ForEach(session.subtitleTracks) { track in
+                            optionRow(
+                                track.displayName,
+                                isSelected: session.selectedSubtitleTrack == track.id
+                            ) {
+                                session.selectSubtitleTrack(track.id)
+                            }
+                        }
+                    }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .frame(maxHeight: 190)
+
+                // Sizing is meaningless with nothing on screen to size.
+                if session.selectedSubtitleTrack != nil {
+                    Divider().overlay(.white.opacity(0.2))
+                    subtitleSizeRow
+                }
+
+            case .videoSize:
+                ForEach(VideoFill.allCases) { fill in
+                    optionRow(fill.title, isSelected: session.videoFill == fill) {
+                        session.videoFill = fill
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 210)
+        .fixedSize(horizontal: true, vertical: false)
+        .glassEffect(playerGlass, in: .rect(cornerRadius: 16))
+    }
+
+    /// Five sizes in a row rather than five more rows in the list: they're an
+    /// ordered scale, so the order carries the meaning and the labels can be
+    /// short enough to sit side by side.
+    private var subtitleSizeRow: some View {
+        HStack(spacing: 8) {
+            Text("Size")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Spacer(minLength: 8)
+
+            ForEach(SubtitleScale.allCases) { scale in
+                let isSelected = SubtitleScale.nearest(to: session.subtitleScale) == scale
+
+                Button {
+                    session.subtitleScale = scale.rawValue
+                    scheduleHide()
+                } label: {
+                    Text(scale.shortTitle)
+                        .font(.caption.weight(.semibold))
+                        .frame(width: 30, height: 30)
+                        .background {
+                            Circle().fill(.white.opacity(isSelected ? 0.3 : 0.1))
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(scale.title) subtitles")
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private func optionRow(
+        _ title: String,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button {
+            action()
+            scheduleHide()
+        } label: {
+            HStack(spacing: 10) {
+                Text(title)
+                    .font(.subheadline)
+
+                Spacer(minLength: 12)
+
+                // Reserved rather than conditional, so choosing a different
+                // row doesn't change the width of the panel under your thumb.
+                Image(systemName: "checkmark")
+                    .font(.caption.weight(.semibold))
+                    .opacity(isSelected ? 1 : 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 11)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Opens the line-up along the bottom: the rest of the season, or the
+    /// channels with what's on each. The transport's next and channel-up are
+    /// the quick ways on; this is for picking somewhere else entirely.
     private var queueStripButton: some View {
         Button {
             if isShowingQueue {
@@ -254,12 +417,22 @@ struct PlayerControls: View {
                 scheduleHide()
             }
         } label: {
-            Image(systemName: isShowingQueue ? "rectangle.stack.fill" : "rectangle.stack")
+            Image(systemName: queueSymbol)
                 .font(.headline)
                 .padding(12)
-                .glassEffect(.clear.interactive(), in: .circle)
+                .glassEffect(playerGlass.interactive(), in: .circle)
         }
-        .accessibilityLabel(isShowingQueue ? "Hide episodes" : "Show episodes")
+        .accessibilityLabel(isShowingQueue ? "Hide \(queueNoun)" : "Show \(queueNoun)")
+    }
+
+    private var queueNoun: String { isLive ? "channels" : "episodes" }
+
+    private var queueSymbol: String {
+        if isLive {
+            isShowingQueue ? "tv.fill" : "tv"
+        } else {
+            isShowingQueue ? "rectangle.stack.fill" : "rectangle.stack"
+        }
     }
 
     /// Plays the next episode without leaving the player. Reuses the engine,
@@ -273,91 +446,11 @@ struct PlayerControls: View {
             Image(systemName: "forward.end.fill")
                 .font(.headline)
                 .padding(12)
-                .glassEffect(.clear.interactive(), in: .circle)
+                .glassEffect(playerGlass.interactive(), in: .circle)
                 .opacity(session.isSwitching ? 0.4 : 1)
         }
         .disabled(session.isSwitching)
         .accessibilityLabel("Next episode")
-    }
-
-    /// Changes channel without leaving the player. The engine is kept and
-    /// handed a new stream, so this costs a re-buffer rather than a restart.
-    private var channelMenu: some View {
-        Menu {
-            ForEach(session.queue) { channel in
-                Button {
-                    scheduleHide()
-                    Task { await session.switchTo(channel) }
-                } label: {
-                    let name = [channel.channelNumber, channel.name].metadataLine ?? "Channel"
-
-                    // A Label with an empty symbol name isn't an unmarked row,
-                    // it's a lookup for a symbol called "".
-                    if channel.id == session.current.itemID {
-                        Label(name, systemImage: "checkmark")
-                    } else {
-                        Text(name)
-                    }
-                }
-            }
-        } label: {
-            Image(systemName: "list.bullet")
-                .font(.headline)
-                .padding(12)
-                .glassEffect(.clear.interactive(), in: .circle)
-                // Says a change is in flight, since the picture keeps showing
-                // the old channel until the new stream opens.
-                .opacity(session.isSwitching ? 0.4 : 1)
-        }
-        .disabled(session.isSwitching)
-        .accessibilityLabel("Channels")
-    }
-
-    private var subtitleMenu: some View {
-        Menu {
-            Picker("Subtitles", selection: subtitleSelection) {
-                Text("Off").tag(PlaybackTrack.ID?.none)
-
-                ForEach(session.subtitleTracks) { track in
-                    Text(track.displayName).tag(PlaybackTrack.ID?.some(track.id))
-                }
-            }
-
-            // Sizing is meaningless with nothing on screen to size.
-            if session.selectedSubtitleTrack != nil {
-                Picker("Size", selection: scaleSelection) {
-                    ForEach(SubtitleScale.allCases) { scale in
-                        Text(scale.title).tag(scale)
-                    }
-                }
-            }
-        } label: {
-            Image(systemName: session.selectedSubtitleTrack == nil ? "captions.bubble" : "captions.bubble.fill")
-                .font(.headline)
-                .padding(12)
-                .glassEffect(.clear.interactive(), in: .circle)
-        }
-        .accessibilityLabel("Subtitles")
-    }
-
-    private var subtitleSelection: Binding<PlaybackTrack.ID?> {
-        Binding(
-            get: { session.selectedSubtitleTrack },
-            set: {
-                session.selectSubtitleTrack($0)
-                scheduleHide()
-            }
-        )
-    }
-
-    private var scaleSelection: Binding<SubtitleScale> {
-        Binding(
-            get: { SubtitleScale.nearest(to: session.subtitleScale) },
-            set: {
-                session.subtitleScale = $0.rawValue
-                scheduleHide()
-            }
-        )
     }
 
     private var transport: some View {
@@ -377,7 +470,7 @@ struct PlayerControls: View {
                 Image(systemName: session.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 34))
                     .frame(width: 74, height: 74)
-                    .glassEffect(.clear.interactive(), in: .circle)
+                    .glassEffect(playerGlass.interactive(), in: .circle)
             }
             .accessibilityLabel(session.isPlaying ? "Pause" : "Play")
 
@@ -407,7 +500,7 @@ struct PlayerControls: View {
             Image(systemName: symbol)
                 .font(.system(size: 26))
                 .frame(width: 56, height: 56)
-                .glassEffect(.clear.interactive(), in: .circle)
+                .glassEffect(playerGlass.interactive(), in: .circle)
         }
         .disabled(!enabled || session.isSwitching)
         .opacity(enabled ? 1 : 0.35)
@@ -419,7 +512,7 @@ struct PlayerControls: View {
             Image(systemName: symbol)
                 .font(.system(size: 26))
                 .frame(width: 56, height: 56)
-                .glassEffect(.clear.interactive(), in: .circle)
+                .glassEffect(playerGlass.interactive(), in: .circle)
         }
         .accessibilityLabel(seconds < 0 ? "Skip back 15 seconds" : "Skip forward 15 seconds")
     }
@@ -457,7 +550,9 @@ struct PlayerControls: View {
 
             // Browsing the season counts as using the player: pulling the
             // strip out from under a thumb mid-scroll would be its own bug.
-            guard !Task.isCancelled, session.isPlaying, !session.isScrubbing, !isShowingQueue else {
+            guard !Task.isCancelled, session.isPlaying, !session.isScrubbing,
+                  !isShowingQueue, openPanel == nil
+            else {
                 return
             }
             isVisible = false
