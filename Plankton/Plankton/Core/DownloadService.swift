@@ -9,6 +9,9 @@ import AVFoundation
 import Foundation
 import JellyfinAPI
 import Observation
+import OSLog
+
+private let logger = Logger(subsystem: "com.schembor.Plankton", category: "Downloads")
 
 /// A media item saved on device, or on its way there.
 struct DownloadedMedia: Codable, Equatable, Identifiable {
@@ -35,13 +38,10 @@ struct DownloadedMedia: Codable, Equatable, Identifiable {
     var fileBookmark: Data?
     var fileSize: Int64?
 
-    /// The engine whose format this was saved in. Nil on records written
-    /// before the direct engine existed, which are always HLS.
+    /// The engine whose format this was saved in, for reference. Playback
+    /// doesn't read it — `DownloadService.requiredEngine(forItemID:)` reads
+    /// the file instead, so the two can't disagree.
     var playbackEngine: PlaybackEngineKind?
-
-    /// The engine that can actually open this file, whatever the user's
-    /// current preference is: HLS needs AVPlayer, an original container needs mpv.
-    var requiredEngine: PlaybackEngineKind { playbackEngine ?? .server }
 
     var id: String { itemID }
 
@@ -138,6 +138,7 @@ final class DownloadService: NSObject {
 
         try? FileManager.default.createDirectory(at: postersDirectory, withIntermediateDirectories: true)
         try? FileManager.default.createDirectory(at: filesDirectory, withIntermediateDirectories: true)
+        Self.excludeFromBackup(self.directory)
         media = Self.loadRecords(from: recordsURL)
         backfillMissingSizes()
         reconcileWithSystem()
@@ -323,6 +324,11 @@ final class DownloadService: NSObject {
         activeTasks[itemID] = task
         progress[itemID] = 0
         task.resume()
+
+        logger.info("""
+            Started \(source.isDirectFile ? "file" : "HLS") download for \(itemID, privacy: .public): \
+            \(url.absoluteString, privacy: .private)
+            """)
     }
 
     /// Starts downloads for a batch of items, e.g. a whole season. Negotiation
@@ -378,14 +384,65 @@ final class DownloadService: NSObject {
         saveRecords()
     }
 
-    /// Removes every download. Called on sign out.
+    /// Removes every download, whether the index knows about it or not.
+    ///
+    /// `delete(itemID:)` can only reach what's on record. A file left behind by
+    /// a delete that failed, or by an index that was lost, is invisible: it
+    /// lives in Application Support, which the Files app doesn't show, so
+    /// nothing on the device can reach it either. This clears the directory
+    /// itself rather than working through the records.
     func deleteAll() {
+        // In-flight transfers first, or one finishing mid-sweep writes its
+        // file back out afterwards.
+        for task in activeTasks.values {
+            task.cancel()
+        }
+        activeTasks.removeAll()
+
+        // HLS bundles sit outside our directory and only their bookmarks know
+        // where, so those go the ordinary way before the index is dropped.
         for itemID in media.map(\.itemID) {
             delete(itemID: itemID)
         }
+
+        // Then the directory itself, which is what catches the stragglers.
+        try? FileManager.default.removeItem(at: directory)
+        try? FileManager.default.createDirectory(at: postersDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: filesDirectory, withIntermediateDirectories: true)
+        Self.excludeFromBackup(directory)
+
+        media.removeAll()
+        progress.removeAll()
+        speeds.removeAll()
+        failures.removeAll()
+        byteSamples.removeAll()
+        saveRecords()
+
+        logger.info("Cleared all downloads")
+    }
+
+    /// Everything the app is using on disk, including files no record points
+    /// at. This is what makes a straggler visible: when it exceeds the sum of
+    /// the downloads on screen, something is being kept that shouldn't be.
+    var storageUsed: Int64 {
+        (try? FileManager.default.allocatedSizeOfDirectory(at: directory)) ?? 0
     }
 
     // MARK: - Files
+
+    /// Keeps downloaded media out of iCloud and iTunes backups.
+    ///
+    /// Every byte of it can be fetched from the server again, and a library of
+    /// downloads would otherwise push a backup into the tens of gigabytes.
+    /// Applied to the whole directory, which covers the media, the artwork
+    /// snapshots and the index — the index is worthless without the files it
+    /// points at, so backing it up alone would only restore broken records.
+    static func excludeFromBackup(_ url: URL) {
+        var url = url
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
+    }
 
     /// Local URL of a completed download, resolving (and refreshing) its bookmark.
     func localURL(forItemID itemID: String) -> URL? {
@@ -409,8 +466,14 @@ final class DownloadService: NSObject {
     /// The engine that can open a download, or nil when there isn't one.
     /// Playback follows this rather than the user's setting — a downloaded
     /// file should stay playable whatever the preference happens to be.
+    ///
+    /// Read off the file rather than from the record. An HLS download is a
+    /// `.movpkg` bundle only AVPlayer can open, and anything else is an
+    /// original container only mpv can. That's a fact about what's on disk,
+    /// where a stored flag is a claim that can go missing — and did.
     func requiredEngine(forItemID itemID: String) -> PlaybackEngineKind? {
-        media.first { $0.itemID == itemID }?.requiredEngine
+        guard let url = localURL(forItemID: itemID) else { return nil }
+        return url.pathExtension.caseInsensitiveCompare("movpkg") == .orderedSame ? .server : .direct
     }
 
     /// Local file URL of the poster snapshot saved alongside a download.
@@ -601,6 +664,10 @@ extension DownloadService: AVAssetDownloadDelegate {
               let index = media.firstIndex(where: { $0.itemID == itemID })
         else { return }
 
+        // The system chooses where an HLS bundle lands, outside our directory,
+        // so this one has to be excluded on its own.
+        Self.excludeFromBackup(location)
+
         media[index].status = .downloaded
         media[index].fileBookmark = try? location.bookmarkData()
         media[index].fileSize = try? FileManager.default.allocatedSizeOfDirectory(at: location)
@@ -621,6 +688,10 @@ extension DownloadService: AVAssetDownloadDelegate {
         if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled {
             purge(itemID: itemID)
         } else {
+            logger.error("""
+                Download failed for \(itemID, privacy: .public): \
+                \(nsError.domain) \(nsError.code) \(error.localizedDescription)
+                """)
             failures.insert(itemID)
         }
     }
@@ -659,9 +730,17 @@ extension DownloadService: URLSessionDownloadDelegate {
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
+        // AVAssetDownloadTask is itself a URLSessionDownloadTask, so an HLS
+        // download can arrive here too. Its bundle is already in its final
+        // place and is handled by the asset delegate; moving it would break it.
+        guard !(downloadTask is AVAssetDownloadTask) else { return }
+
         guard let itemID = downloadTask.taskDescription,
               let index = media.firstIndex(where: { $0.itemID == itemID })
-        else { return }
+        else {
+            logger.error("Finished a file download with no matching record")
+            return
+        }
 
         // The temporary file is deleted the moment this returns, so the move
         // has to happen here rather than in a task.
@@ -672,9 +751,14 @@ extension DownloadService: URLSessionDownloadDelegate {
         do {
             try FileManager.default.moveItem(at: location, to: destination)
         } catch {
+            logger.error("Couldn't move \(itemID, privacy: .public) into place: \(error.localizedDescription)")
             failures.insert(itemID)
             return
         }
+
+        // Belt and braces: the directory is already excluded, but the flag is
+        // cheap and a file created after the fact is easy to overlook.
+        Self.excludeFromBackup(destination)
 
         media[index].status = .downloaded
         media[index].fileBookmark = try? destination.bookmarkData()
@@ -684,6 +768,12 @@ extension DownloadService: URLSessionDownloadDelegate {
         progress[itemID] = nil
         clearSpeedTracking(itemID: itemID)
         saveRecords()
+
+        let savedSize = Self.sizeText(media[index].fileSize ?? 0)
+        logger.info("""
+            Saved \(itemID, privacy: .public) (\(savedSize, privacy: .public)) \
+            to \(destination.lastPathComponent, privacy: .private)
+            """)
     }
 
     /// Keeps the container's extension. Nothing reads it — mpv sniffs the
