@@ -12,6 +12,12 @@ struct PlaybackItem: Identifiable {
     let id = UUID()
     let url: URL
 
+    /// Which engine plays this. Usually the user's setting, but a downloaded
+    /// file overrides it: an original container can only be opened by the
+    /// direct engine, and an HLS bundle only by AVPlayer, so the format on
+    /// disk decides rather than the preference.
+    var engine: PlaybackEngineKind = .server
+
     /// Server item being played, for resume and progress reporting. Nil for
     /// local playback with no session to report against.
     var itemID: String?
@@ -28,6 +34,7 @@ struct ItemDetailView: View {
 
     @Environment(JellyfinService.self) private var jellyfin
     @Environment(DownloadService.self) private var downloads
+    @Environment(PlaybackSettings.self) private var playback
 
     let item: BaseItemDto
 
@@ -161,6 +168,8 @@ struct ItemDetailView: View {
             title: displayed.displayTitle,
             metadata: metadataLine,
             overview: displayed.overview,
+            // A series has no file of its own — its episodes do.
+            mediaSummary: isSeries ? nil : displayed.mediaSummary,
             rating: displayed.communityRatingText,
             ratingURL: displayed.imdbURL
         ) {
@@ -316,7 +325,7 @@ struct ItemDetailView: View {
     // MARK: - Playback & URLs
 
     private func play(_ item: BaseItemDto) {
-        launcher.play(item, jellyfin: jellyfin, downloads: downloads)
+        launcher.play(item, jellyfin: jellyfin, downloads: downloads, settings: playback)
     }
 
 }

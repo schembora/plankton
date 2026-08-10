@@ -54,6 +54,83 @@ extension BaseItemDto {
         return String(format: "%.1f", communityRating)
     }
 
+    /// e.g. "4K Dolby Vision · HEVC · 38 Mbps" — the shape of the file the
+    /// server actually holds.
+    ///
+    /// Worth showing now that bitrate is capped per network: the number is what
+    /// tells you whether an item plays as it is or gets converted on the way.
+    /// It describes the source only — deliberately not a prediction of what
+    /// will happen, since that's the server's call to make at playback time.
+    var mediaSummary: String? {
+        guard let source = mediaSources?.first else { return nil }
+        let video = source.mediaStreams?.first { $0.type == .video }
+
+        return [
+            video.flatMap(Self.resolutionText),
+            video?.codec.flatMap(Self.codecText),
+            source.bitrate.flatMap(Self.bitrateText),
+        ].metadataLine
+    }
+
+    /// Named the way a release is described rather than by exact pixel count —
+    /// a "4K" file is rarely exactly 3840 wide once it's been cropped.
+    private static func resolutionText(_ stream: MediaStream) -> String? {
+        guard let width = stream.width else { return nil }
+
+        let resolution: String? = switch width {
+        case 3000...: "4K"
+        case 1900...: "1080p"
+        case 1260...: "720p"
+        case 640...: "SD"
+        default: nil
+        }
+
+        guard let resolution else { return nil }
+        guard let range = dynamicRangeText(stream) else { return resolution }
+        return "\(resolution) \(range)"
+    }
+
+    /// Only the distinctions worth a badge. HDR10 and HLG both read as "HDR"
+    /// because nothing the viewer decides turns on which one it is, where
+    /// Dolby Vision is the thing people go looking for.
+    private static func dynamicRangeText(_ stream: MediaStream) -> String? {
+        switch stream.videoRangeType {
+        case .dovi, .doviWithHDR10, .doviWithHLG, .doviWithSDR, .doviWithEL,
+             .doviWithHDR10Plus, .doviWithELHDR10Plus:
+            "Dolby Vision"
+        case .hdr10, .hdr10Plus, .hlg:
+            "HDR"
+        default:
+            // Older servers fill in the coarse field and not the specific one.
+            stream.videoRange == .hdr ? "HDR" : nil
+        }
+    }
+
+    private static func codecText(_ codec: String) -> String? {
+        switch codec.lowercased() {
+        case "h264", "avc": "H.264"
+        case "hevc", "h265": "HEVC"
+        case "av1": "AV1"
+        case "vp9": "VP9"
+        case "vp8": "VP8"
+        case "mpeg2video": "MPEG-2"
+        case "mpeg4": "MPEG-4"
+        case "vc1": "VC-1"
+        default: codec.uppercased()
+        }
+    }
+
+    /// Whole megabits above ten: the figure swings shot to shot, and a decimal
+    /// there would imply a precision it doesn't have.
+    private static func bitrateText(_ bitsPerSecond: Int) -> String? {
+        let megabits = Double(bitsPerSecond) / 1_000_000
+        guard megabits >= 0.1 else { return nil }
+
+        return megabits >= 10
+            ? "\(Int(megabits.rounded())) Mbps"
+            : String(format: "%.1f Mbps", megabits)
+    }
+
     /// e.g. "S2 E4" for episodes.
     var episodeLabel: String? {
         guard type == .episode else { return nil }

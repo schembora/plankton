@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		AA11AA11AA11AA11AA11AA03 /* JellyfinAPI in Frameworks */ = {isa = PBXBuildFile; productRef = AA11AA11AA11AA11AA11AA02 /* JellyfinAPI */; };
+		AA11AA11AA11AA11AA11AA06 /* MPVKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA11AA11AA11AA11AA11AA05 /* MPVKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -70,6 +71,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA11AA11AA11AA11AA11AA03 /* JellyfinAPI in Frameworks */,
+				AA11AA11AA11AA11AA11AA06 /* MPVKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -131,6 +133,7 @@
 			name = Plankton;
 			packageProductDependencies = (
 				AA11AA11AA11AA11AA11AA02 /* JellyfinAPI */,
+				AA11AA11AA11AA11AA11AA05 /* MPVKit */,
 			);
 			productName = Plankton;
 			productReference = D21B1CF5301169F500E15E3C /* Plankton.app */;
@@ -216,6 +219,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				AA11AA11AA11AA11AA11AA01 /* XCRemoteSwiftPackageReference "jellyfin-sdk-swift" */,
+				AA11AA11AA11AA11AA11AA04 /* XCRemoteSwiftPackageReference "MPVKit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D21B1CF6301169F500E15E3C /* Products */;
@@ -608,6 +612,14 @@
 				minimumVersion = 2.1.0;
 			};
 		};
+		AA11AA11AA11AA11AA11AA04 /* XCRemoteSwiftPackageReference "MPVKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/schembora/MPVKit";
+			requirement = {
+				kind = exactVersion;
+				version = "1.0.0-resize.1";
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -615,6 +627,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA11AA11AA11AA11AA11AA01 /* XCRemoteSwiftPackageReference "jellyfin-sdk-swift" */;
 			productName = JellyfinAPI;
+		};
+		AA11AA11AA11AA11AA11AA05 /* MPVKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AA11AA11AA11AA11AA11AA04 /* XCRemoteSwiftPackageReference "MPVKit" */;
+			productName = MPVKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

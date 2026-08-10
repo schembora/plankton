@@ -23,11 +23,21 @@ final class PlaybackLauncher {
     var errorMessage: String?
     private(set) var isPreparing = false
 
-    func play(_ item: BaseItemDto, jellyfin: JellyfinService, downloads: DownloadService) {
+    func play(
+        _ item: BaseItemDto,
+        jellyfin: JellyfinService,
+        downloads: DownloadService,
+        settings: PlaybackSettings
+    ) {
+        let engine = settings.engine
         // Prefer the downloaded copy when there is one — instant and offline-capable.
         if let itemID = item.id, let localURL = downloads.localURL(forItemID: itemID) {
             playback = PlaybackItem(
                 url: localURL,
+                // The file's own format decides, not the setting: an original
+                // container can't be opened by AVPlayer, and an HLS bundle
+                // can't be opened by mpv.
+                engine: downloads.requiredEngine(forItemID: itemID) ?? engine,
                 itemID: itemID,
                 startTicks: item.resumePositionTicks,
                 metadata: NowPlayingMetadata(item)
@@ -39,12 +49,19 @@ final class PlaybackLauncher {
         isPreparing = true
 
         Task {
-            let url = await jellyfin.playbackURL(for: item)
+            let source = await jellyfin.playbackSource(
+                for: item,
+                engine: engine,
+                // Resolved per play rather than held: the phone can change
+                // networks between one episode and the next.
+                maxBitrate: settings.maxBitrate(expensive: jellyfin.isOnExpensiveNetwork)
+            )
             isPreparing = false
 
-            if let url {
+            if let source {
                 playback = PlaybackItem(
-                    url: url,
+                    url: source.url,
+                    engine: engine,
                     itemID: item.id,
                     startTicks: item.resumePositionTicks,
                     metadata: NowPlayingMetadata(item)

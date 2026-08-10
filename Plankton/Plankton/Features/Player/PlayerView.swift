@@ -2,23 +2,27 @@
 //  PlayerView.swift
 //  Plankton
 //
-//  Full-screen video playback via the native player.
+//  Full-screen video playback, through whichever engine the user picked.
 //
 
-import AVFAudio
-import AVKit
 import OSLog
 import SwiftUI
+import UIKit
 
 private let logger = Logger(subsystem: "com.schembor.Plankton", category: "Player")
 
-/// Wraps the player with failure handling: shows the playback error and dismisses on OK.
+/// Composes a playthrough: the engine's video surface, the controls it doesn't
+/// bring itself, and the alert that closes the player when playback fails.
 struct PlayerContainerView: View {
 
     let playback: PlaybackItem
 
     @Environment(JellyfinService.self) private var jellyfin
+    @Environment(PlaybackSettings.self) private var settings
+    @Environment(ImageCache.self) private var images
     @Environment(\.dismiss) private var dismiss
+
+    @State private var session: PlaybackSession?
     @State private var errorMessage: String?
 
     private var isShowingError: Binding<Bool> {
@@ -28,6 +32,38 @@ struct PlayerContainerView: View {
         )
     }
 
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            if let session {
+                PlayerSurface(surface: session.surface)
+                    .ignoresSafeArea()
+                    // The controls hang off the surface rather than sitting
+                    // beside it in the stack: as a sibling, SwiftUI drops the
+                    // representable's wrapper straight into the hosting
+                    // controller's view, which UIKit warns about.
+                    .overlay {
+                        // AVKit arrives with a scrubber and transport; an engine
+                        // drawing into a bare layer has none.
+                        if !session.engine.providesControls {
+                            PlayerControls(session: session, title: playback.metadata?.title) {
+                                dismiss()
+                            }
+                        }
+                    }
+            }
+        }
+        .statusBarHidden()
+        .onAppear(perform: startPlayback)
+        .onDisappear { session?.end() }
+        .alert("Couldn't Play Video", isPresented: isShowingError) {
+            Button("OK", role: .cancel) { dismiss() }
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
     /// Only server-backed playback reports; a local file played offline has
     /// nothing to report to.
     private var reporter: PlaybackReporter? {
@@ -35,152 +71,53 @@ struct PlayerContainerView: View {
         return PlaybackReporter(jellyfin: jellyfin, itemID: itemID)
     }
 
-    var body: some View {
-        PlayerView(playback: playback, reporter: reporter) { message in
+    private func startPlayback() {
+        guard session == nil else { return }
+
+        logger.info("Starting playback via \(playback.engine.rawValue): \(playback.url.absoluteString, privacy: .private)")
+
+        let session = PlaybackSession(
+            playback: playback,
+            engineKind: playback.engine,
+            settings: settings,
+            reporter: reporter
+        )
+        session.start(artwork: images) { message in
             errorMessage = message
         }
-        .ignoresSafeArea()
-        .alert("Couldn't Play Video", isPresented: isShowingError) {
-            Button("OK", role: .cancel) { dismiss() }
-        } message: {
-            Text(errorMessage ?? "")
+        self.session = session
+    }
+}
+
+/// Hosts whatever the engine vends. A plain view wraps as a view, not as a
+/// controller: wrapping mpv's layer-backed view in a view controller made
+/// SwiftUI reparent it into the hosting controller, which UIKit warns about.
+private struct PlayerSurface: View {
+
+    let surface: PlaybackSurface
+
+    var body: some View {
+        switch surface {
+        case .view(let view):
+            SurfaceView(view: view)
+        case .controller(let controller):
+            SurfaceController(controller: controller)
         }
     }
 }
 
-struct PlayerView: UIViewControllerRepresentable {
+private struct SurfaceView: UIViewRepresentable {
 
-    @Environment(ImageCache.self) private var images
+    let view: UIView
 
-    let playback: PlaybackItem
-    let reporter: PlaybackReporter?
-    let onError: (String) -> Void
+    func makeUIView(context: Context) -> UIView { view }
+    func updateUIView(_ uiView: UIView, context: Context) {}
+}
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(reporter: reporter, onError: onError)
-    }
+private struct SurfaceController: UIViewControllerRepresentable {
 
-    func makeUIViewController(context: Context) -> AVPlayerViewController {
-        logger.info("Starting playback: \(playback.url.absoluteString, privacy: .private)")
-        configureAudioSession()
+    let controller: UIViewController
 
-        let item = AVPlayerItem(url: playback.url)
-        context.coordinator.observe(item)
-
-        let controller = AVPlayerViewController()
-        let player = AVPlayer(playerItem: item)
-        controller.player = player
-
-        // Picture in Picture: show the PiP button and start PiP automatically
-        // when the user leaves the app during fullscreen playback.
-        controller.allowsPictureInPicturePlayback = true
-        controller.canStartPictureInPictureAutomaticallyFromInline = true
-
-        // NowPlayingCenter fills the lock screen instead: AVKit would publish
-        // the stream's own metadata, which for Jellyfin HLS is nothing at all.
-        controller.updatesNowPlayingInfoCenter = false
-        if let metadata = playback.metadata {
-            context.coordinator.beginNowPlaying(metadata, for: player, artwork: images)
-        }
-
-        // Resume where the server says we left off. Seeking before play avoids
-        // a visible jump from the opening frames.
-        if let startTicks = playback.startTicks {
-            let start = PlaybackReporter.seconds(fromTicks: startTicks)
-            player.seek(to: CMTime(seconds: start, preferredTimescale: 600))
-        }
-
-        context.coordinator.beginReporting(for: player)
-        player.play()
-        return controller
-    }
-
-    func updateUIViewController(_ uiViewController: AVPlayerViewController, context: Context) {}
-
-    static func dismantleUIViewController(_ uiViewController: AVPlayerViewController, coordinator: Coordinator) {
-        coordinator.endReporting(for: uiViewController.player)
-        coordinator.endNowPlaying()
-        uiViewController.player?.pause()
-        uiViewController.player = nil
-    }
-
-    /// `.playback` keeps audio on the speaker even with the silent switch on,
-    /// which is what a video app should do.
-    private func configureAudioSession() {
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.playback, mode: .moviePlayback)
-            try session.setActive(true)
-        } catch {
-            logger.error("Failed to configure audio session: \(error.localizedDescription)")
-        }
-    }
-
-    @MainActor
-    final class Coordinator {
-        private let reporter: PlaybackReporter?
-        private let onError: (String) -> Void
-        private let nowPlaying = NowPlayingCenter()
-        private var observation: NSKeyValueObservation?
-        private var timeObserver: Any?
-
-        init(reporter: PlaybackReporter?, onError: @escaping (String) -> Void) {
-            self.reporter = reporter
-            self.onError = onError
-        }
-
-        func beginNowPlaying(_ metadata: NowPlayingMetadata, for player: AVPlayer, artwork cache: ImageCache) {
-            nowPlaying.start(metadata, for: player, artwork: cache)
-        }
-
-        func endNowPlaying() {
-            nowPlaying.stop()
-        }
-
-        /// Announces the play and then heartbeats position on an interval, so
-        /// the server's resume point tracks along even if the app is killed
-        /// without a clean stop.
-        func beginReporting(for player: AVPlayer) {
-            guard let reporter else { return }
-
-            let start = player.currentTime().seconds
-            Task { await reporter.started(atSeconds: start.isFinite ? start : 0) }
-
-            let interval = CMTime(seconds: PlaybackReporter.progressInterval, preferredTimescale: 1)
-            timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak player] time in
-                guard time.seconds.isFinite else { return }
-                let isPaused = (player?.timeControlStatus ?? .paused) != .playing
-                Task { await reporter.progress(atSeconds: time.seconds, isPaused: isPaused) }
-            }
-        }
-
-        func endReporting(for player: AVPlayer?) {
-            if let timeObserver {
-                player?.removeTimeObserver(timeObserver)
-                self.timeObserver = nil
-            }
-            guard let reporter else { return }
-
-            // Captured now: the player is torn down before the task runs.
-            let position = player?.currentTime().seconds ?? 0
-            Task { await reporter.stopped(atSeconds: position.isFinite ? position : 0) }
-        }
-
-        func observe(_ item: AVPlayerItem) {
-            observation = item.observe(\.status, options: [.new]) { [onError] item, _ in
-                guard item.status == .failed else { return }
-
-                let message = item.error?.localizedDescription ?? "Unknown playback error"
-                logger.error("Playback failed: \(message)")
-
-                if let errorLog = item.errorLog() {
-                    for event in errorLog.events {
-                        logger.error("HLS: \(event.errorStatusCode) \(event.errorComment ?? "-") \(event.uri ?? "-", privacy: .private)")
-                    }
-                }
-
-                Task { @MainActor in onError(message) }
-            }
-        }
-    }
+    func makeUIViewController(context: Context) -> UIViewController { controller }
+    func updateUIViewController(_ uiViewController: UIViewController, context: Context) {}
 }

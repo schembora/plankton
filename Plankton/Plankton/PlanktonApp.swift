@@ -22,13 +22,18 @@ struct PlanktonApp: App {
     @State private var images: ImageCache
     @State private var router: AppRouter
     @State private var indexer: SpotlightIndexer
+    @State private var playback: PlaybackSettings
 
     init() {
         let jellyfin = JellyfinService()
-        let downloads = DownloadService(jellyfin: jellyfin)
+        // Downloads negotiate with the server the same way playback does, so
+        // they need the engine preference to know what to ask for.
+        let playback = PlaybackSettings()
+        let downloads = DownloadService(jellyfin: jellyfin, settings: playback)
         let router = AppRouter()
 
         _jellyfin = State(initialValue: jellyfin)
+        _playback = State(initialValue: playback)
         _downloads = State(initialValue: downloads)
         _images = State(initialValue: ImageCache(jellyfin: jellyfin))
         _router = State(initialValue: router)
@@ -49,6 +54,7 @@ struct PlanktonApp: App {
                 .environment(downloads)
                 .environment(images)
                 .environment(router)
+                .environment(playback)
                 .task { await indexer.refreshIfStale() }
                 .onChange(of: scenePhase) { _, phase in
                     guard phase == .active else { return }

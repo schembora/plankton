@@ -11,6 +11,7 @@ struct SettingsView: View {
 
     @Environment(JellyfinService.self) private var jellyfin
     @Environment(ImageCache.self) private var images
+    @Environment(PlaybackSettings.self) private var playback
 
     @State private var isSigningOut = false
 
@@ -21,8 +22,47 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        @Bindable var playback = playback
+
+        return NavigationStack {
             List {
+                // A picker of one is just a label, so it stays out until there
+                // is something to pick between.
+                if PlaybackEngineKind.available.count > 1 {
+                    Section {
+                        Picker("Video", selection: $playback.engine) {
+                            ForEach(PlaybackEngineKind.available) { kind in
+                                Text(kind.title).tag(kind)
+                            }
+                        }
+                    } header: {
+                        Text("Playback")
+                    } footer: {
+                        Text(playback.engine.explanation)
+                    }
+                }
+
+                Section {
+                    Picker("Wi-Fi", selection: $playback.maxBitrateWiFi) {
+                        ForEach(BitrateLimit.allCases) { limit in
+                            Text(limit.title).tag(limit)
+                        }
+                    }
+
+                    Picker("Cellular", selection: $playback.maxBitrateCellular) {
+                        ForEach(BitrateLimit.allCases) { limit in
+                            Text(limit.title).tag(limit)
+                        }
+                    }
+                } header: {
+                    Text("Maximum Bitrate")
+                } footer: {
+                    // Stated plainly because the intuition runs the other way:
+                    // this reads like a quality dial, and lowering it is what
+                    // makes the server start converting.
+                    Text("The server converts anything above the limit, which is slower to start. Use Maximum unless the connection can't keep up.")
+                }
+
                 Section("Server") {
                     LabeledContent("Name", value: jellyfin.serverName ?? "Unknown")
                     LabeledContent("Address", value: jellyfin.serverURL?.absoluteString ?? "Unknown")

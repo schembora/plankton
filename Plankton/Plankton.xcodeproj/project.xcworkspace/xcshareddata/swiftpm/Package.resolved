@@ -1,5 +1,5 @@
 {
-  "originHash" : "36620ee8949fe41e618d414d534abd13cc815ec5bf74219fcc28882240615c4b",
+  "originHash" : "efd731afc2c9d21a4cef17addc7ef887f6e7f37a46e543f7907d8571493f3654",
   "pins" : [
     {
       "identity" : "get",
@@ -17,6 +17,15 @@
       "state" : {
         "revision" : "09d8f31886b6bea1cfc4719a39bdb6eac1287344",
         "version" : "2.1.0"
+      }
+    },
+    {
+      "identity" : "mpvkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/schembora/MPVKit",
+      "state" : {
+        "revision" : "3dd820b004b053a17d50478ecf967a56750fd40f",
+        "version" : "1.0.0-resize.1"
       }
     },
     {

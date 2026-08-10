@@ -35,6 +35,14 @@ struct DownloadedMedia: Codable, Equatable, Identifiable {
     var fileBookmark: Data?
     var fileSize: Int64?
 
+    /// The engine whose format this was saved in. Nil on records written
+    /// before the direct engine existed, which are always HLS.
+    var playbackEngine: PlaybackEngineKind?
+
+    /// The engine that can actually open this file, whatever the user's
+    /// current preference is: HLS needs AVPlayer, an original container needs mpv.
+    var requiredEngine: PlaybackEngineKind { playbackEngine ?? .server }
+
     var id: String { itemID }
 
     /// e.g. "S2 E4" for episodes.
@@ -88,38 +96,48 @@ final class DownloadService: NSObject {
     /// Item IDs whose most recent attempt failed, until retried or relaunched.
     private var failures: Set<String> = []
 
-    private var activeTasks: [String: AVAssetDownloadTask] = [:]
+    private var activeTasks: [String: URLSessionTask] = [:]
 
     /// Last (bytes received, timestamp) sample per item, used to derive `speeds`.
     private var byteSamples: [String: (bytes: Int64, date: Date)] = [:]
 
-    /// Created in `init` (the delegate is `self`); never changes afterwards.
-    @ObservationIgnored private var session: AVAssetDownloadURLSession!
+    /// Created in `init` (the delegate is `self`); never change afterwards.
+    ///
+    /// Two sessions because `AVAssetDownloadURLSession` only vends asset tasks:
+    /// it's the only thing that can pull down an HLS stream, and the only thing
+    /// that can't fetch an ordinary file.
+    @ObservationIgnored private var assetSession: AVAssetDownloadURLSession!
+    @ObservationIgnored private var fileSession: URLSession!
 
     private let jellyfin: JellyfinService
+    private let settings: PlaybackSettings
     private let directory: URL
 
     /// Set by the app delegate when the system relaunches the app to deliver
     /// background download events; handed back in `urlSessionDidFinishEvents`.
     static var backgroundCompletionHandler: (() -> Void)?
 
-    init(jellyfin: JellyfinService, directory: URL? = nil) {
+    init(jellyfin: JellyfinService, settings: PlaybackSettings, directory: URL? = nil) {
         self.jellyfin = jellyfin
+        self.settings = settings
         self.directory = directory ?? FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "Downloads", directoryHint: .isDirectory)
         super.init()
 
-        let configuration = URLSessionConfiguration.background(
-            withIdentifier: "com.schembor.Plankton.downloads"
-        )
-        session = AVAssetDownloadURLSession(
-            configuration: configuration,
+        assetSession = AVAssetDownloadURLSession(
+            configuration: .background(withIdentifier: "com.schembor.Plankton.downloads"),
             assetDownloadDelegate: self,
+            delegateQueue: .main
+        )
+        fileSession = URLSession(
+            configuration: .background(withIdentifier: "com.schembor.Plankton.downloads.files"),
+            delegate: self,
             delegateQueue: .main
         )
 
         try? FileManager.default.createDirectory(at: postersDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: filesDirectory, withIntermediateDirectories: true)
         media = Self.loadRecords(from: recordsURL)
         backfillMissingSizes()
         reconcileWithSystem()
@@ -214,7 +232,12 @@ final class DownloadService: NSObject {
     // MARK: - Downloading
 
     /// Starts downloading an item for offline playback, negotiating the same
-    /// HLS stream the player would use so any format becomes playable offline.
+    /// source the player would use so anything streamable is downloadable.
+    ///
+    /// On the direct engine the server hands over the original file, which
+    /// downloads as an ordinary transfer and keeps its full quality. When it
+    /// falls back to transcoding — or on the server engine — the source is an
+    /// HLS stream, and only `AVAssetDownloadURLSession` can fetch that.
     func download(item: BaseItemDto) async {
         guard let itemID = item.id, !itemID.isEmpty else { return }
         guard state(for: itemID) != .downloaded, activeTasks[itemID] == nil else { return }
@@ -222,10 +245,17 @@ final class DownloadService: NSObject {
         upsertRecord(for: item)
         failures.remove(itemID)
 
-        guard let url = await jellyfin.playbackURL(for: item) else {
+        let source = await jellyfin.playbackSource(
+            for: item,
+            engine: settings.engine,
+            maxBitrate: settings.maxBitrate(expensive: jellyfin.isOnExpensiveNetwork)
+        )
+
+        guard let source else {
             failures.insert(itemID)
             return
         }
+        let url = source.url
 
         // Snapshot artwork so the Downloads tab looks right offline. The
         // poster is the item's own primary image (episodes fall back to the
@@ -264,13 +294,27 @@ final class DownloadService: NSObject {
             try? data.write(to: seriesPosterFileURL(forSeriesID: seriesID), options: .atomic)
         }
 
-        let asset = AVURLAsset(url: url)
-        guard let task = session.makeAssetDownloadTask(
-            asset: asset,
-            assetTitle: item.name ?? itemID,
-            assetArtworkData: artwork,
-            options: nil
-        ) else {
+        // Recorded from what the server actually returned, not from the
+        // setting: the direct engine still falls back to HLS for anything the
+        // server won't hand over, and playback has to know which it got.
+        if let index = media.firstIndex(where: { $0.itemID == itemID }) {
+            media[index].playbackEngine = source.isDirectFile ? .direct : .server
+            saveRecords()
+        }
+
+        let task: URLSessionTask?
+        if source.isDirectFile {
+            task = fileSession.downloadTask(with: url)
+        } else {
+            task = assetSession.makeAssetDownloadTask(
+                asset: AVURLAsset(url: url),
+                assetTitle: item.name ?? itemID,
+                assetArtworkData: artwork,
+                options: nil
+            )
+        }
+
+        guard let task else {
             failures.insert(itemID)
             return
         }
@@ -362,6 +406,13 @@ final class DownloadService: NSObject {
         return url
     }
 
+    /// The engine that can open a download, or nil when there isn't one.
+    /// Playback follows this rather than the user's setting — a downloaded
+    /// file should stay playable whatever the preference happens to be.
+    func requiredEngine(forItemID itemID: String) -> PlaybackEngineKind? {
+        media.first { $0.itemID == itemID }?.requiredEngine
+    }
+
     /// Local file URL of the poster snapshot saved alongside a download.
     func posterFileURL(forItemID itemID: String) -> URL {
         postersDirectory.appending(path: "\(itemID).jpg")
@@ -390,6 +441,12 @@ final class DownloadService: NSObject {
 
     private var postersDirectory: URL {
         directory.appending(path: "posters", directoryHint: .isDirectory)
+    }
+
+    /// Where directly-downloaded files land. HLS downloads aren't here — the
+    /// system places those itself and we only keep a bookmark.
+    private var filesDirectory: URL {
+        directory.appending(path: "files", directoryHint: .isDirectory)
     }
 
     private func upsertRecord(for item: BaseItemDto) {
@@ -452,15 +509,19 @@ final class DownloadService: NSObject {
     /// `downloading` without a matching live task is dropped, along with
     /// poster files nothing references anymore.
     private func reconcileWithSystem() {
+        // Both sessions can have transfers that outlived the last launch.
+        let sessions: [URLSession] = [assetSession, fileSession]
 
-        session.getAllTasks { [weak self] tasks in
+        Task { @MainActor [weak self] in
             guard let self else { return }
 
             var activeIDs: Set<String> = []
-            for case let task as AVAssetDownloadTask in tasks {
-                guard let itemID = task.taskDescription else { continue }
-                activeIDs.insert(itemID)
-                activeTasks[itemID] = task
+            for session in sessions {
+                for task in await session.allTasks {
+                    guard let itemID = task.taskDescription else { continue }
+                    activeIDs.insert(itemID)
+                    activeTasks[itemID] = task
+                }
             }
 
             let before = media.count
@@ -567,6 +628,70 @@ extension DownloadService: AVAssetDownloadDelegate {
     func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
         DownloadService.backgroundCompletionHandler?()
         DownloadService.backgroundCompletionHandler = nil
+    }
+}
+
+// MARK: - URLSessionDownloadDelegate
+
+/// Direct downloads of the original file. Simpler than the HLS path in every
+/// respect: real byte counts instead of loaded time ranges, one file instead of
+/// a fragment bundle, and the server copying rather than re-encoding.
+extension DownloadService: URLSessionDownloadDelegate {
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard let itemID = downloadTask.taskDescription else { return }
+        updateSpeed(itemID: itemID, bytesReceived: totalBytesWritten)
+
+        // The server doesn't always declare a length; without one there's no
+        // fraction to show, and the strip falls back to the byte count.
+        guard totalBytesExpectedToWrite > 0 else { return }
+        progress[itemID] = min(max(Double(totalBytesWritten) / Double(totalBytesExpectedToWrite), 0), 1)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        guard let itemID = downloadTask.taskDescription,
+              let index = media.firstIndex(where: { $0.itemID == itemID })
+        else { return }
+
+        // The temporary file is deleted the moment this returns, so the move
+        // has to happen here rather than in a task.
+        let destination = destinationURL(forItemID: itemID, from: downloadTask)
+        try? FileManager.default.createDirectory(at: filesDirectory, withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: destination)
+
+        do {
+            try FileManager.default.moveItem(at: location, to: destination)
+        } catch {
+            failures.insert(itemID)
+            return
+        }
+
+        media[index].status = .downloaded
+        media[index].fileBookmark = try? destination.bookmarkData()
+        media[index].fileSize = (try? destination.resourceValues(forKeys: [.fileSizeKey]))
+            .flatMap(\.fileSize)
+            .map(Int64.init)
+        progress[itemID] = nil
+        clearSpeedTracking(itemID: itemID)
+        saveRecords()
+    }
+
+    /// Keeps the container's extension. Nothing reads it — mpv sniffs the
+    /// content — but a bare item ID makes the file unidentifiable by hand.
+    private func destinationURL(forItemID itemID: String, from task: URLSessionTask) -> URL {
+        let container = task.originalRequest?.url?.pathExtension ?? ""
+        let name = container.isEmpty ? itemID : "\(itemID).\(container)"
+        return filesDirectory.appending(path: name)
     }
 }
 
