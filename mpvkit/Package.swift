@@ -301,13 +301,11 @@ let package = Package(
 
         .binaryTarget(
             name: "Libmpv",
-            // Still the old fork release, which predates the AVFoundation
-            // video output in patch 0004. It has to stay until this directory
-            // is built and published to Plankton's own releases, at which
-            // point this URL and its checksum move there. Every other target
-            // is untouched by our patches and resolves to upstream MPVKit.
-            url: "https://github.com/schembora/MPVKit/releases/download/1.0.0-resize.1/Libmpv.xcframework.zip",
-            checksum: "955dca40c272e2e161489d4d85a71e04212973b3679f1bd518e8ed1608964395"
+            // The local build, which is where our patches actually live. A URL
+            // here would be a release of exactly this directory's output, so
+            // building and testing against the path first keeps the two from
+            // drifting.
+            path: "dist/release/xcframework/Libmpv.xcframework"
         ),
         //AUTO_GENERATE_TARGETS_END//
     ]
