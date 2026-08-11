@@ -219,7 +219,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				AA11AA11AA11AA11AA11AA01 /* XCRemoteSwiftPackageReference "jellyfin-sdk-swift" */,
-				AA11AA11AA11AA11AA11AA04 /* XCLocalSwiftPackageReference "mpvkit" */,
+				AA11AA11AA11AA11AA11AA04 /* XCLocalSwiftPackageReference "../mpvkit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D21B1CF6301169F500E15E3C /* Products */;
@@ -603,6 +603,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		AA11AA11AA11AA11AA11AA04 /* XCLocalSwiftPackageReference "../mpvkit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../mpvkit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		AA11AA11AA11AA11AA11AA01 /* XCRemoteSwiftPackageReference "jellyfin-sdk-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -613,13 +620,6 @@
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCLocalSwiftPackageReference section */
-		AA11AA11AA11AA11AA11AA04 /* XCLocalSwiftPackageReference "mpvkit" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = ../mpvkit;
-		};
-/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		AA11AA11AA11AA11AA11AA02 /* JellyfinAPI */ = {
