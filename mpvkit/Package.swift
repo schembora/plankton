@@ -301,11 +301,12 @@ let package = Package(
 
         .binaryTarget(
             name: "Libmpv",
-            // The local build, which is where our patches actually live. A URL
-            // here would be a release of exactly this directory's output, so
-            // building and testing against the path first keeps the two from
-            // drifting.
-            path: "dist/release/xcframework/Libmpv.xcframework"
+            // Built from the patches in this directory and published from this
+            // repo, so the source of the patch and the binary it produced stay
+            // together. Every other target is untouched by our patches and
+            // resolves to upstream MPVKit.
+            url: "https://github.com/schembora/plankton/releases/download/libmpv-0.41.0-1/Libmpv.xcframework.zip",
+            checksum: "366daad37d615b7e4d440b7ca79615a4979e7ab1e5eaab8fe5848016ab8166ff"
         ),
         //AUTO_GENERATE_TARGETS_END//
     ]
