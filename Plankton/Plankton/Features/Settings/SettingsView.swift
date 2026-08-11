@@ -15,9 +15,6 @@ struct SettingsView: View {
 
     @State private var isSigningOut = false
 
-    #if DEBUG
-    @State private var harness = NowPlayingHarness()
-    #endif
 
     private var appVersion: String {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
@@ -97,22 +94,6 @@ struct SettingsView: View {
                         AcknowledgementsView()
                     }
                 }
-
-                #if DEBUG
-                Section {
-                    Button(harness.isRunning ? "Stop Harness" : "Start Now Playing Harness") {
-                        if harness.isRunning {
-                            harness.stop()
-                        } else {
-                            harness.start()
-                        }
-                    }
-                } header: {
-                    Text("Diagnostics")
-                } footer: {
-                    Text("Publishes a lock screen entry backed by silence, with no mpv and no video. Start it, lock the phone, and see whether the card appears.")
-                }
-                #endif
             }
             .navigationTitle("Settings")
         }

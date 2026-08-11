@@ -10,8 +10,6 @@ import Foundation
 import JellyfinAPI
 import Observation
 import OSLog
-import UIKit
-
 private let logger = Logger(subsystem: "com.schembor.Plankton", category: "Player")
 
 /// How often the on-screen controls resample the engine's clock — smooth enough
@@ -448,13 +446,6 @@ final class PlaybackSession {
         let center = NotificationCenter.default
 
         audioObservers = [
-            center.addObserver(
-                forName: UIApplication.didEnterBackgroundNotification,
-                object: nil,
-                queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.logBackgroundState() }
-            },
 
             center.addObserver(
                 forName: AVAudioSession.interruptionNotification,
@@ -472,25 +463,6 @@ final class PlaybackSession {
                 MainActor.assumeIsolated { self?.handleRouteChange(notification) }
             },
         ]
-    }
-
-    /// Whether the decoder is still running once the screen is off decides
-    /// which half of the lock screen problem this is: an entry that is never
-    /// published, or audio that has already stopped so there is no entry to
-    /// publish. Debug only.
-    private func logBackgroundState() {
-        #if DEBUG
-        logger.info("backgrounded: playing=\(self.engine.isPlaying, privacy: .public)")
-
-        // Again once the transition has settled. The question is not whether
-        // audio survives the moment of locking but whether it is still going
-        // a few seconds later.
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
-            guard let self else { return }
-            logger.info("backgrounded +3s: playing=\(self.engine.isPlaying, privacy: .public)")
-        }
-        #endif
     }
 
     private func handleInterruption(_ notification: Notification) {
@@ -542,11 +514,6 @@ final class PlaybackSession {
         do {
             try session.setCategory(.playback, mode: .moviePlayback)
             try session.setActive(true)
-
-            #if DEBUG
-            let outputs = session.currentRoute.outputs.map(\.portType.rawValue).joined(separator: ",")
-            logger.info("audio session active: category=\(session.category.rawValue, privacy: .public) outputs=\(outputs, privacy: .public)")
-            #endif
         } catch {
             logger.error("Failed to configure audio session: \(error.localizedDescription)")
         }

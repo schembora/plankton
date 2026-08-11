@@ -108,22 +108,16 @@ final class NowPlayingCenter {
         self.engine = engine
         isLive = metadata.isLive
 
-        // Without this the app never becomes the system's "now playing" app,
-        // so the info set below has nowhere to appear and the remote commands
-        // registered further down are never delivered. Setting
-        // `nowPlayingInfo` alone is not enough.
+        // Required for the app to receive remote control events at all;
+        // setting `nowPlayingInfo` alone does not ask for them. Note this is
+        // not what decides whether the entry appears — that is the audio
+        // session, and `MPVPlaybackEngine` explains the part that matters.
         UIApplication.shared.beginReceivingRemoteControlEvents()
 
         staticInfo[MPMediaItemPropertyTitle] = metadata.title
         if let subtitle = metadata.subtitle {
             staticInfo[MPMediaItemPropertyArtist] = subtitle
         }
-        // Declaring audio instead was tried and changed nothing, so this says
-        // what is true. The entry is published and healthy — eight fields,
-        // rate 1, audio still running three seconds after lock — and iOS
-        // still draws nothing, which points at the surface rather than at
-        // this dictionary: mpv renders into a CAMetalLayer, which the system
-        // does not recognise as video it can present.
         staticInfo[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.video.rawValue
         staticInfo[MPNowPlayingInfoPropertyIsLiveStream] = metadata.isLive
 
@@ -131,10 +125,6 @@ final class NowPlayingCenter {
         observe(engine)
         registerCommands(for: engine, queue: queue)
         loadArtwork(metadata.artwork, from: cache)
-
-        #if DEBUG
-        logger.info("started: \(metadata.title, privacy: .public) live=\(metadata.isLive, privacy: .public)")
-        #endif
     }
 
     /// Which queue buttons are live. Called as the player moves, so the lock
@@ -187,13 +177,6 @@ final class NowPlayingCenter {
         }
 
         infoCenter.nowPlayingInfo = info
-
-        #if DEBUG
-        // The readback matters more than the write: if the system has dropped
-        // the entry, this returns nil even though the assignment succeeded.
-        let fields = infoCenter.nowPlayingInfo?.count ?? -1
-        logger.info("published: rate=\(engine.isPlaying ? 1 : 0, privacy: .public) fields=\(fields, privacy: .public)")
-        #endif
 
         // Stated separately from the rate. The system reads this to decide
         // whether the app is the one playing, and a missing value leaves it
