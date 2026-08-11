@@ -16,14 +16,19 @@ keep existing for a clean checkout to build.
 
 Each patch also carries a DEP-3 header stating its own origin.
 
+The numbers are apply order, not decoration: the build sorts the directory by
+filename and applies in that order, and each of ours builds on the one before.
+Upstream's keep the low numbers and ours start at 0100, so pulling a new patch
+from upstream cannot collide with or reorder ours.
+
 | Patch | Origin | License |
 |---|---|---|
 | `0001-player-add-moltenvk-context` | Upstream [mpvkit/MPVKit](https://github.com/mpvkit/MPVKit), plus Plankton's fix to report layer resizes to mpv | LGPLv2.1+ |
 | `0002-revert-build-static` | Upstream [mpvkit/MPVKit](https://github.com/mpvkit/MPVKit) | LGPLv2.1+ |
 | `0003-enable-avfoundation-ao-tvos` | Upstream [mpvkit/MPVKit](https://github.com/mpvkit/MPVKit) | LGPLv2.1+ |
-| `0004-avfoundation-video-output` | Plankton | LGPLv2.1+ |
-| `0005-avfoundation-software-frame-upload` | Plankton | LGPLv2.1+ |
-| `0006-avfoundation-osd-compositing` | Plankton | LGPLv2.1+ |
+| `0100-vo-add-host-layer-output` | Plankton | LGPLv2.1+ |
+| `0101-vo-upload-software-frames` | Plankton | LGPLv2.1+ |
+| `0102-vo-composite-osd` | Plankton | LGPLv2.1+ |
 
 ### 0001, MoltenVK resize
 
@@ -35,7 +40,7 @@ raises `VO_EVENT_RESIZE` from `VOCTRL_CHECK_EVENTS`.
 Only relevant to the `gpu-next` path. If `vo=avfoundation` becomes the only
 output Plankton uses, this patch stops being load bearing.
 
-### 0005, software frame upload
+### 0101, software frame upload
 
 VideoToolbox has no hardware path for VP9, MPEG-2, VC-1 or MPEG-4 ASP, and none
 for AV1 before A17 Pro. A hardware only output shows nothing at all for a
@@ -49,7 +54,7 @@ pool and are IOSurface backed, which the display layer requires, and uploads
 are tagged with the stream's colour since unlike hardware frames they arrive as
 bytes with no such history.
 
-### 0006, OSD compositing
+### 0102, OSD compositing
 
 Subtitles. Drawn into the frame at video resolution rather than over the layer,
 so this output still does not need to know how large the layer is, and so they
@@ -61,7 +66,7 @@ with no subtitles on screen stays a straight handoff. A decoder owned frame is
 duplicated rather than drawn on, since it may still be referenced for
 prediction; an uploaded frame is already ours and is drawn on in place.
 
-### 0004, AVFoundation video output
+### 0100, host layer video output
 
 Written for Plankton. Adds `vo=avfoundation`, which hands VideoToolbox frames
 to an `AVSampleBufferDisplayLayer` passed in as `--wid`.
