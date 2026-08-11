@@ -92,6 +92,28 @@ Deliberate limits:
   framework and scales by `videoGravity`, so this output never sets a drawable
   size and never has to notice a rotation.
 
+## Rebuilding
+
+```sh
+cd mpvkit && make build platform=ios,isimulator
+```
+
+LGPL variant only. Hours, mostly FFmpeg. Needs `meson ninja nasm cmake
+automake pkg-config` from Homebrew.
+
+**Patches are applied once, on a fresh clone.** `beforeBuild()` returns early
+if the source directory is already there, so editing a patch and rebuilding
+silently reuses the previously patched tree and rebuilds identical code. After
+changing anything under `patch/libmpv`, delete the extracted source and the
+build output for that library first:
+
+```sh
+rm -rf dist/libmpv-v0.41.0 dist/libmpv
+```
+
+Everything else in `dist/` can stay, which keeps FFmpeg and the other
+dependencies out of the rebuild.
+
 ## LGPL
 
 libmpv, FFmpeg and the rest are LGPL and statically linked. The patch series
