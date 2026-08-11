@@ -29,6 +29,7 @@ from upstream cannot collide with or reorder ours.
 | `0100-vo-add-host-layer-output` | Plankton | LGPLv2.1+ |
 | `0101-vo-upload-software-frames` | Plankton | LGPLv2.1+ |
 | `0102-vo-composite-osd` | Plankton | LGPLv2.1+ |
+| `0103-vo-register-videotoolbox-hwdec` | Plankton | LGPLv2.1+ |
 
 ### 0001, MoltenVK resize
 
@@ -96,6 +97,23 @@ Deliberate limits:
 - **Geometry stays with the host.** The layer is placed and sized by the UI
   framework and scales by `videoGravity`, so this output never sets a drawable
   size and never has to notice a rotation.
+
+### 0103, VideoToolbox hwdec registration
+
+mpv only hands a non-copying hwdec a device that came from the video output.
+The VideoToolbox registration already in mpv is a `ra_hwdec` belonging to the
+GPU outputs: loaded only by `vo_gpu` and `vo_gpu_next`, and it refuses to load
+without an OpenGL or Vulkan interop to map into. This output is neither, so
+before this patch the decoder found no device and skipped hardware decoding
+entirely.
+
+Nothing looked wrong, because 0101 uploads the software frames and renders them
+correctly. It only cost CPU, battery and headroom at high resolutions. The
+engine now logs `hwdec:` on file load so this cannot hide again.
+
+This is also what makes dropping Vulkan safe. Disabling `videotoolbox-pl`
+removes `hwdec_vt.c`, which was the only thing registering VideoToolbox at all,
+so doing that before this patch would have been fatal rather than cosmetic.
 
 ## Rebuilding
 

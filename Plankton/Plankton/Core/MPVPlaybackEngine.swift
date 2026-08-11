@@ -69,6 +69,7 @@ final class MPVPlaybackEngine: PlaybackEngine {
         static let coreIdle = "core-idle"
         static let duration = "duration"
         static let timePos = "time-pos"
+        static let hwdecCurrent = "hwdec-current"
         static let start = "start"
         static let trackList = "track-list"
         static let subtitleTrack = "sid"
@@ -473,6 +474,12 @@ final class MPVPlaybackEngine: PlaybackEngine {
             Task { @MainActor in
                 self.isFileOpen = true
                 self.notifyState()
+
+                // Whether the decoder actually took the hardware path. Worth
+                // stating out loud: software decoding looks identical, because
+                // the video output uploads those frames and renders them
+                // correctly. It only shows up as heat and battery.
+                logger.info("hwdec: \(self.string(Property.hwdecCurrent) ?? "unknown", privacy: .public)")
             }
 
         // mpv's answer to AVPlayer's seek completion — the position is only

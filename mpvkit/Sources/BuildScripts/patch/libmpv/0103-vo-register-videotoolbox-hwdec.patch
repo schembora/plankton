@@ -1,0 +1,98 @@
+Description: Register the VideoToolbox device from the video output, so
+ hardware decoding is actually used.
+ .
+ mpv only hands a non-copying hwdec a device that came from the video output.
+ The existing VideoToolbox registration is a ra_hwdec belonging to the GPU
+ outputs: it is loaded only by vo_gpu and vo_gpu_next, and refuses to load
+ without an OpenGL or Vulkan interop to map into. This output is neither, so
+ the decoder found no device, silently skipped hardware decoding, and every
+ frame arrived as software to be uploaded.
+ .
+ Nothing looked wrong, because the software upload path renders it correctly.
+ It only costs CPU, battery and headroom at high resolutions.
+ .
+ Offered rather than required: if the device cannot be created the decoder
+ falls back to software frames, which this output still handles.
+Author: Plankton
+Origin: other
+Forwarded: no
+Last-Update: 2026-08-11
+
+diff --git a/video/out/vo_avfoundation.m b/video/out/vo_avfoundation.m
+index 802ea4e..7d17896 100644
+--- a/video/out/vo_avfoundation.m
++++ b/video/out/vo_avfoundation.m
+@@ -26,6 +26,14 @@
+  * drawn into it. Decoded frames already are CVPixelBuffers when hwdec is
+  * videotoolbox, so that path is a handoff rather than a conversion.
+  *
++ * This output registers the VideoToolbox device itself. mpv only hands a
++ * non-copying hwdec a device that came from the video output, and the existing
++ * VideoToolbox registration belongs to the GPU outputs: it is a `ra_hwdec`,
++ * only loaded by vo_gpu and vo_gpu_next, and it refuses to load at all without
++ * an OpenGL or Vulkan interop to map into. Without this the decoder finds no
++ * device, quietly skips hardware decoding, and everything arrives as software
++ * frames to be uploaded below.
++ *
+  * Software decoded frames are uploaded into a pooled CVPixelBuffer instead.
+  * Only NV12 and P010 are accepted, which is enough to cover everything: mpv
+  * converts whatever the decoder produced into one of them. This matters more
+@@ -51,10 +59,13 @@
+  * it has to notice.
+  */
+ 
++#include <libavutil/hwcontext.h>
++
+ #include <AVFoundation/AVFoundation.h>
+ #include <CoreMedia/CoreMedia.h>
+ 
+ #include "common/common.h"
++#include "video/hwdec.h"
+ #include "sub/draw_bmp.h"
+ #include "sub/osd.h"
+ #include "video/mp_image.h"
+@@ -63,6 +74,9 @@
+ struct priv {
+     AVSampleBufferDisplayLayer *layer;
+ 
++    // What tells mpv that hardware decoding has somewhere to go.
++    struct mp_hwdec_ctx hwctx;
++
+     // Held between draw_frame and flip_page, which is where mpv wants the
+     // frame actually shown.
+     struct mp_image *next_image;
+@@ -466,6 +480,22 @@ static int preinit(struct vo *vo)
+     // its view down while the player is still shutting off.
+     p->layer = [(AVSampleBufferDisplayLayer *)object retain];
+ 
++    // Offered rather than required: if the device cannot be created the
++    // decoder falls back to software frames, which this output uploads.
++    vo->hwdec_devs = hwdec_devices_create();
++    p->hwctx = (struct mp_hwdec_ctx){
++        .driver_name = "avfoundation",
++        .hw_imgfmt = IMGFMT_VIDEOTOOLBOX,
++    };
++
++    int err = av_hwdevice_ctx_create(&p->hwctx.av_device_ref,
++                                     AV_HWDEVICE_TYPE_VIDEOTOOLBOX, NULL, NULL, 0);
++    if (err < 0) {
++        MP_WARN(vo, "no VideoToolbox device; decoding will fall back to software\n");
++    } else {
++        hwdec_devices_add(vo->hwdec_devs, &p->hwctx);
++    }
++
+     return 0;
+ }
+ 
+@@ -600,6 +630,11 @@ static void uninit(struct vo *vo)
+         [p->layer flushAndRemoveImage];
+     }
+ 
++    if (p->hwctx.av_device_ref) {
++        hwdec_devices_remove(vo->hwdec_devs, &p->hwctx);
++        av_buffer_unref(&p->hwctx.av_device_ref);
++    }
++
+     mp_image_unrefp(&p->next_image);
+     release_format(p);
+     release_pool(p);
