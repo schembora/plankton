@@ -192,15 +192,23 @@ final class MPVPlaybackEngine: PlaybackEngine {
     /// MoltenVK can't present while the app is backgrounded, and coming back
     /// with the video track still attached leaves a black picture. Dropping the
     /// track on the way out keeps audio playing and restores cleanly.
+    ///
+    /// Through the property interface, and off the main thread. `vid` was being
+    /// set as an option, which mpv only accepts before `mpv_initialize` and
+    /// silently ignores afterwards, so the track was never actually dropped:
+    /// mpv kept rendering into a layer it could not present, which is what put
+    /// an uncommitted CATransaction on its render thread at lock. It has to
+    /// leave the main thread as well, since changing the track makes the video
+    /// output reconfigure and its setter blocks until that lands.
     private func observeAppLifecycle() {
         let center = NotificationCenter.default
 
         lifecycleObservers = [
             center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.setOption(Property.videoTrack, "no") }
+                MainActor.assumeIsolated { self?.setPropertyOffMain(Property.videoTrack, "no") }
             },
             center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.setOption(Property.videoTrack, "auto") }
+                MainActor.assumeIsolated { self?.setPropertyOffMain(Property.videoTrack, "auto") }
             },
         ]
     }

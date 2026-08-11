@@ -9,6 +9,7 @@ import Foundation
 import JellyfinAPI
 import MediaPlayer
 import OSLog
+import UIKit
 
 private let logger = Logger(subsystem: "com.schembor.Plankton", category: "NowPlaying")
 
@@ -20,6 +21,18 @@ struct NowPlayingMetadata {
     var title: String
     var subtitle: String?
     var artwork: Artwork?
+
+    /// A stream with no end. The system drops the scrubber and marks the entry
+    /// live, which is the honest presentation: there is no position to show and
+    /// nothing to seek within.
+    var isLive = false
+}
+
+/// What the lock screen can reach in the queue behind the player. Absent where
+/// there is nowhere to go, so the buttons don't appear on a single film.
+struct NowPlayingQueue {
+    var goToPrevious: () -> Void
+    var goToNext: () -> Void
 }
 
 extension NowPlayingMetadata {
@@ -82,20 +95,54 @@ final class NowPlayingCenter {
     private var commandTargets: [(command: MPRemoteCommand, target: Any)] = []
     private var artworkTask: Task<Void, Never>?
 
-    func start(_ metadata: NowPlayingMetadata, for engine: any PlaybackEngine, artwork cache: ImageCache) {
+    /// Held so the queue buttons can be enabled and disabled as the player
+    /// moves, without tearing the whole entry down and rebuilding it.
+    private var isLive = false
+
+    func start(
+        _ metadata: NowPlayingMetadata,
+        for engine: any PlaybackEngine,
+        artwork cache: ImageCache,
+        queue: NowPlayingQueue? = nil
+    ) {
         self.engine = engine
+        isLive = metadata.isLive
+
+        // Without this the app never becomes the system's "now playing" app,
+        // so the info set below has nowhere to appear and the remote commands
+        // registered further down are never delivered. Setting
+        // `nowPlayingInfo` alone is not enough.
+        UIApplication.shared.beginReceivingRemoteControlEvents()
 
         staticInfo[MPMediaItemPropertyTitle] = metadata.title
         if let subtitle = metadata.subtitle {
             staticInfo[MPMediaItemPropertyArtist] = subtitle
         }
+        // Declaring audio instead was tried and changed nothing, so this says
+        // what is true. The entry is published and healthy — eight fields,
+        // rate 1, audio still running three seconds after lock — and iOS
+        // still draws nothing, which points at the surface rather than at
+        // this dictionary: mpv renders into a CAMetalLayer, which the system
+        // does not recognise as video it can present.
         staticInfo[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.video.rawValue
-        staticInfo[MPNowPlayingInfoPropertyIsLiveStream] = false
+        staticInfo[MPNowPlayingInfoPropertyIsLiveStream] = metadata.isLive
 
         publish()
         observe(engine)
-        registerCommands(for: engine)
+        registerCommands(for: engine, queue: queue)
         loadArtwork(metadata.artwork, from: cache)
+
+        #if DEBUG
+        logger.info("started: \(metadata.title, privacy: .public) live=\(metadata.isLive, privacy: .public)")
+        #endif
+    }
+
+    /// Which queue buttons are live. Called as the player moves, so the lock
+    /// screen stops offering "next" at the end of a season rather than
+    /// offering a button that does nothing.
+    func setQueueAvailability(previous: Bool, next: Bool) {
+        commandCenter.previousTrackCommand.isEnabled = previous
+        commandCenter.nextTrackCommand.isEnabled = next
     }
 
     /// Leaves nothing behind. A stale entry would keep the lock screen offering
@@ -111,8 +158,11 @@ final class NowPlayingCenter {
         commandTargets.removeAll()
 
         staticInfo.removeAll()
+        isLive = false
         engine = nil
         infoCenter.nowPlayingInfo = nil
+        infoCenter.playbackState = .stopped
+        UIApplication.shared.endReceivingRemoteControlEvents()
     }
 
     /// Position goes out as a timestamp plus a rate rather than a ticking
@@ -130,11 +180,25 @@ final class NowPlayingCenter {
 
         // Indefinite until the HLS playlist loads; publishing a NaN duration
         // leaves the lock screen scrubber pinned at zero for the whole item.
-        if let duration = engine.duration {
+        // A live stream has no length and no position worth publishing. Sending
+        // them anyway puts a scrubber on the lock screen that seeks nowhere.
+        if let duration = engine.duration, !isLive {
             info[MPMediaItemPropertyPlaybackDuration] = duration
         }
 
         infoCenter.nowPlayingInfo = info
+
+        #if DEBUG
+        // The readback matters more than the write: if the system has dropped
+        // the entry, this returns nil even though the assignment succeeded.
+        let fields = infoCenter.nowPlayingInfo?.count ?? -1
+        logger.info("published: rate=\(engine.isPlaying ? 1 : 0, privacy: .public) fields=\(fields, privacy: .public)")
+        #endif
+
+        // Stated separately from the rate. The system reads this to decide
+        // whether the app is the one playing, and a missing value leaves it
+        // guessing from a dictionary it has no other reason to re-read.
+        infoCenter.playbackState = engine.isPlaying ? .playing : .paused
     }
 
     /// Play/pause moves the clock the lock screen extrapolates from, and an
@@ -145,7 +209,7 @@ final class NowPlayingCenter {
         }
     }
 
-    private func registerCommands(for engine: any PlaybackEngine) {
+    private func registerCommands(for engine: any PlaybackEngine, queue: NowPlayingQueue?) {
         commandCenter.skipForwardCommand.preferredIntervals = [NSNumber(value: Self.skipInterval)]
         commandCenter.skipBackwardCommand.preferredIntervals = [NSNumber(value: Self.skipInterval)]
 
@@ -171,22 +235,42 @@ final class NowPlayingCenter {
             return .success
         }
 
-        add(commandCenter.skipForwardCommand) { [weak self] _ in
-            self?.seek(to: engine.currentTime + Self.skipInterval)
-            return .success
-        }
-
-        add(commandCenter.skipBackwardCommand) { [weak self] _ in
-            self?.seek(to: engine.currentTime - Self.skipInterval)
-            return .success
-        }
-
-        add(commandCenter.changePlaybackPositionCommand) { [weak self] event in
-            guard let event = event as? MPChangePlaybackPositionCommandEvent else {
-                return .commandFailed
+        // Nothing to seek within on a live stream, so the controls that only
+        // mean something against a duration are left off rather than wired to
+        // a no-op.
+        if !isLive {
+            add(commandCenter.skipForwardCommand) { [weak self] _ in
+                self?.seek(to: engine.currentTime + Self.skipInterval)
+                return .success
             }
-            self?.seek(to: event.positionTime)
-            return .success
+
+            add(commandCenter.skipBackwardCommand) { [weak self] _ in
+                self?.seek(to: engine.currentTime - Self.skipInterval)
+                return .success
+            }
+
+            add(commandCenter.changePlaybackPositionCommand) { event in
+                guard let event = event as? MPChangePlaybackPositionCommandEvent else {
+                    return .commandFailed
+                }
+                engine.seek(to: event.positionTime)
+                return .success
+            }
+        }
+
+        // The next episode, or the next channel. This is what makes the lock
+        // screen, a car stereo and a pair of headphones able to move through a
+        // season without the phone coming out.
+        if let queue {
+            add(commandCenter.previousTrackCommand) { _ in
+                queue.goToPrevious()
+                return .success
+            }
+
+            add(commandCenter.nextTrackCommand) { _ in
+                queue.goToNext()
+                return .success
+            }
         }
     }
 

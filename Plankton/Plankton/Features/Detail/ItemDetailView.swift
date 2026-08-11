@@ -42,6 +42,15 @@ struct PlaybackItem: Identifiable {
     /// this one. Empty where there is nowhere to move to, which is what keeps
     /// the controls out of an ordinary player.
     var queue: [PlaybackQueueEntry] = []
+
+    /// What the lock screen shows, with the live flag filled in from the
+    /// resolved source. The metadata is built before the server has said
+    /// whether the stream has an end, so only this knows both.
+    var nowPlayingMetadata: NowPlayingMetadata? {
+        guard var metadata else { return nil }
+        metadata.isLive = isLive
+        return metadata
+    }
 }
 
 struct ItemDetailView: View {
