@@ -123,6 +123,22 @@ final class MPVPlaybackEngine: PlaybackEngine {
         // because it never renders anything itself.
         setOption("vo", "avfoundation")
 
+        // What makes the lock screen work.
+        //
+        // mpv's audiounit output configures the audio session itself, after
+        // ours, and without this it adds `MixWithOthers` to the category. That
+        // option declares the app a secondary audio source, and iOS never
+        // promotes one of those to the now playing app: audio plays, it keeps
+        // playing in the background, and the entry we publish is complete and
+        // correct, but neither the lock screen nor Control Center will show
+        // it. Nothing on the publishing side can win that argument, because
+        // the category is set by the decoder after the player has configured
+        // it.
+        //
+        // Exclusive is also the honest setting for a video player, which
+        // should not be mixing itself under someone else's music.
+        setOption("audio-exclusive", "yes")
+
         // The entire point of this engine — VideoToolbox decodes on device, so
         // the server never re-encodes.
         setOption("hwdec", "videotoolbox")
