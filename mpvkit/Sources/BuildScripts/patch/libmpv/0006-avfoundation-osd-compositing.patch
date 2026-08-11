@@ -13,7 +13,7 @@ Description: Composite mpv's OSD into the frame in vo=avfoundation, so
 Author: Plankton
 Origin: other
 diff --git a/video/out/vo_avfoundation.m b/video/out/vo_avfoundation.m
-index ff14766..2f352ee 100644
+index ff14766..802ea4e 100644
 --- a/video/out/vo_avfoundation.m
 +++ b/video/out/vo_avfoundation.m
 @@ -39,6 +39,12 @@
@@ -38,10 +38,61 @@ index ff14766..2f352ee 100644
  #include "video/mp_image.h"
  #include "vo.h"
  
-@@ -188,6 +196,77 @@ static bool ensure_pool(struct vo *vo, int w, int h, OSType fmt)
+@@ -188,6 +196,128 @@ static bool ensure_pool(struct vo *vo, int w, int h, OSType fmt)
      return true;
  }
  
++/// Points an mp_image at a locked CVPixelBuffer. No copy and no ownership:
++/// the image is a view, valid only while the buffer stays locked.
++static void image_from_pixel_buffer(struct mp_image *img, CVPixelBufferRef buf,
++                                    int imgfmt, struct mp_image_params *params)
++{
++    *img = (struct mp_image){0};
++    mp_image_setfmt(img, imgfmt);
++    mp_image_set_size(img, (int)CVPixelBufferGetWidth(buf), (int)CVPixelBufferGetHeight(buf));
++
++    size_t planes = CVPixelBufferGetPlaneCount(buf);
++    for (size_t i = 0; i < planes && i < MP_MAX_PLANES; i++) {
++        img->planes[i] = CVPixelBufferGetBaseAddressOfPlane(buf, i);
++        img->stride[i] = CVPixelBufferGetBytesPerRowOfPlane(buf, i);
++    }
++
++    img->params = *params;
++}
++
++/// The mpv format matching a CoreVideo one, for describing a buffer we are
++/// about to draw into.
++static int imgfmt_for_cv(OSType fmt)
++{
++    switch (fmt) {
++    case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
++    case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
++        return IMGFMT_NV12;
++    case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange:
++    case kCVPixelFormatType_420YpCbCr10BiPlanarFullRange:
++        return IMGFMT_P010;
++    default:
++        return 0;
++    }
++}
++
++static void probe_osd(void *ctx, struct sub_bitmaps *imgs)
++{
++    *(bool *)ctx = true;
++}
++
++/// Whether anything would be drawn for this frame.
++///
++/// Asked before compositing so the common case stays a handoff: a hardware
++/// frame with no subtitles on screen goes straight to the layer, and only one
++/// that has something to draw pays for a copy. mpv caches the rendered
++/// bitmaps, so asking and then drawing does not rasterise twice.
++static bool has_osd(struct vo *vo, struct mp_osd_res res, double pts)
++{
++    bool any = false;
++    osd_draw(vo->osd, res, pts, 0, mp_draw_sub_formats, probe_osd, &any);
++    return any;
++}
 +/// Duplicates a decoder owned frame so it can be drawn on. Only reached when
 +/// there is OSD for this frame.
 +static CVPixelBufferRef copy_for_compositing(struct vo *vo, CVPixelBufferRef src)
@@ -116,61 +167,10 @@ index ff14766..2f352ee 100644
  /// Copies a software frame into a pooled buffer. Row by row, because mpv's
  /// stride and CoreVideo's are decided independently and rarely agree.
  static CVPixelBufferRef upload_image(struct vo *vo, struct mp_image *mpi)
-@@ -228,6 +307,58 @@ static CVPixelBufferRef upload_image(struct vo *vo, struct mp_image *mpi)
+@@ -228,6 +358,7 @@ static CVPixelBufferRef upload_image(struct vo *vo, struct mp_image *mpi)
      return buf;
  }
  
-+/// Points an mp_image at a locked CVPixelBuffer. No copy and no ownership:
-+/// the image is a view, valid only while the buffer stays locked.
-+static void image_from_pixel_buffer(struct mp_image *img, CVPixelBufferRef buf,
-+                                    int imgfmt, struct mp_image_params *params)
-+{
-+    *img = (struct mp_image){0};
-+    mp_image_setfmt(img, imgfmt);
-+    mp_image_set_size(img, (int)CVPixelBufferGetWidth(buf), (int)CVPixelBufferGetHeight(buf));
-+
-+    size_t planes = CVPixelBufferGetPlaneCount(buf);
-+    for (size_t i = 0; i < planes && i < MP_MAX_PLANES; i++) {
-+        img->planes[i] = CVPixelBufferGetBaseAddressOfPlane(buf, i);
-+        img->stride[i] = CVPixelBufferGetBytesPerRowOfPlane(buf, i);
-+    }
-+
-+    img->params = *params;
-+}
-+
-+/// The mpv format matching a CoreVideo one, for describing a buffer we are
-+/// about to draw into.
-+static int imgfmt_for_cv(OSType fmt)
-+{
-+    switch (fmt) {
-+    case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
-+    case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
-+        return IMGFMT_NV12;
-+    case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange:
-+    case kCVPixelFormatType_420YpCbCr10BiPlanarFullRange:
-+        return IMGFMT_P010;
-+    default:
-+        return 0;
-+    }
-+}
-+
-+static void probe_osd(void *ctx, struct sub_bitmaps *imgs)
-+{
-+    *(bool *)ctx = true;
-+}
-+
-+/// Whether anything would be drawn for this frame.
-+///
-+/// Asked before compositing so the common case stays a handoff: a hardware
-+/// frame with no subtitles on screen goes straight to the layer, and only one
-+/// that has something to draw pays for a copy. mpv caches the rendered
-+/// bitmaps, so asking and then drawing does not rasterise twice.
-+static bool has_osd(struct vo *vo, struct mp_osd_res res, double pts)
-+{
-+    bool any = false;
-+    osd_draw(vo->osd, res, pts, 0, mp_draw_sub_formats, probe_osd, &any);
-+    return any;
-+}
 +
  static void release_format(struct priv *p)
  {
