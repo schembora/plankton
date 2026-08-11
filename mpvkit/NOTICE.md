@@ -22,6 +22,8 @@ Each patch also carries a DEP-3 header stating its own origin.
 | `0002-revert-build-static` | Upstream [mpvkit/MPVKit](https://github.com/mpvkit/MPVKit) | LGPLv2.1+ |
 | `0003-enable-avfoundation-ao-tvos` | Upstream [mpvkit/MPVKit](https://github.com/mpvkit/MPVKit) | LGPLv2.1+ |
 | `0004-avfoundation-video-output` | Plankton | LGPLv2.1+ |
+| `0005-avfoundation-software-frame-upload` | Plankton | LGPLv2.1+ |
+| `0006-avfoundation-osd-compositing` | Plankton | LGPLv2.1+ |
 
 ### 0001, MoltenVK resize
 
@@ -32,6 +34,32 @@ raises `VO_EVENT_RESIZE` from `VOCTRL_CHECK_EVENTS`.
 
 Only relevant to the `gpu-next` path. If `vo=avfoundation` becomes the only
 output Plankton uses, this patch stops being load bearing.
+
+### 0005, software frame upload
+
+VideoToolbox has no hardware path for VP9, MPEG-2, VC-1 or MPEG-4 ASP, and none
+for AV1 before A17 Pro. A hardware only output shows nothing at all for a
+broadcast stream or an older file, and the server does not step in because the
+device profile claims those codecs are playable. Broadcast Live TV is largely
+MPEG-2, so this is not an edge case.
+
+Only NV12 and P010 are accepted, so mpv converts anything else on the way in
+rather than this output growing a conversion of its own. Buffers come from a
+pool and are IOSurface backed, which the display layer requires, and uploads
+are tagged with the stream's colour since unlike hardware frames they arrive as
+bytes with no such history.
+
+### 0006, OSD compositing
+
+Subtitles. Drawn into the frame at video resolution rather than over the layer,
+so this output still does not need to know how large the layer is, and so they
+appear in the Picture in Picture window, which shows the enqueued frames and
+nothing else.
+
+The frame is copied only when there is something to draw, so a hardware frame
+with no subtitles on screen stays a straight handoff. A decoder owned frame is
+duplicated rather than drawn on, since it may still be referenced for
+prediction; an uploaded frame is already ours and is drawn on in place.
 
 ### 0004, AVFoundation video output
 
@@ -53,16 +81,8 @@ buffer layer — is the one taken by several other iOS mpv clients, among them
 read to understand the shape of the problem. This implementation is our own and
 shares no code with them.
 
-Deliberate limits, each of which is a thing to add rather than a thing that is
-broken:
+Deliberate limits:
 
-- **Hardware frames only.** `query_format` accepts `IMGFMT_VIDEOTOOLBOX` and
-  nothing else. Software decoded output would have to be uploaded into a
-  `CVPixelBuffer` first, and the point of this output is that VideoToolbox has
-  already made one. A file that falls back to software decoding will not play
-  on this output.
-- **No OSD.** mpv's rendered overlays, subtitles included, are not composited.
-  Subtitles need the frame and the overlay combined before the layer sees it.
 - **Timing stays with mpv.** Samples carry invalid timestamps and the
   `DisplayImmediately` attachment, so mpv's clock paces playback and the layer
   schedules nothing. The layer's control timebase is the host's to set, since
