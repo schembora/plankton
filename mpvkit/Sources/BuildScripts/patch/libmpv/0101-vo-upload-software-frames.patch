@@ -1,0 +1,275 @@
+Description: Accept software decoded frames in vo=avfoundation by uploading
+ them into a pooled CVPixelBuffer.
+ .
+ VideoToolbox has no hardware path for VP9, MPEG-2, VC-1 or MPEG-4 ASP, and
+ none for AV1 before A17 Pro. A hardware only output shows nothing at all for a
+ broadcast stream or an older file, and the server will not step in because the
+ device profile claims those codecs are playable.
+ .
+ Only NV12 and P010 are accepted, so mpv converts anything else on the way in
+ rather than this output growing its own conversion. Buffers come from a pool
+ and are IOSurface backed, which the display layer requires. Uploads are tagged
+ with the stream's colour, since unlike hardware frames they arrive as bytes
+ with no such history.
+Author: Plankton
+Origin: other
+Forwarded: no
+Last-Update: 2026-08-10
+
+diff --git a/video/out/vo_avfoundation.m b/video/out/vo_avfoundation.m
+index e1e3969..ff14766 100644
+--- a/video/out/vo_avfoundation.m
++++ b/video/out/vo_avfoundation.m
+@@ -24,7 +24,14 @@
+  * playing surface both read from an AVSampleBufferDisplayLayer or an
+  * AVPlayerLayer, and neither can be fed from a CAMetalLayer no matter what is
+  * drawn into it. Decoded frames already are CVPixelBuffers when hwdec is
+- * videotoolbox, so this output is a handoff rather than a conversion.
++ * videotoolbox, so that path is a handoff rather than a conversion.
++ *
++ * Software decoded frames are uploaded into a pooled CVPixelBuffer instead.
++ * Only NV12 and P010 are accepted, which is enough to cover everything: mpv
++ * converts whatever the decoder produced into one of them. This matters more
++ * than it sounds, because VideoToolbox has no hardware path for VP9, MPEG-2,
++ * VC-1 or MPEG-4 ASP, and none for AV1 before A17 Pro. Without this the output
++ * would show nothing at all for a broadcast stream or an older file.
+  *
+  * Presentation timing stays with mpv. Frames are enqueued for immediate
+  * display as flip_page delivers them, so mpv's own clock paces playback and
+@@ -55,8 +62,172 @@
+     // Describes the pixel buffers being enqueued. Cached rather than built per
+     // frame, since it only changes when the format or the size does.
+     CMVideoFormatDescriptionRef format;
++
++    // Recycles the buffers software frames are uploaded into. Allocating one
++    // per frame would be a page fault storm at 24 frames a second.
++    CVPixelBufferPoolRef pool;
++    int pool_w, pool_h;
++    OSType pool_fmt;
++
++    // What the uploaded frames have to be tagged with. Hardware frames arrive
++    // already carrying this; uploaded ones are bytes with no such history, and
++    // an untagged buffer is guessed at by the layer.
++    struct mp_image_params params;
+ };
+ 
++/// The layer reads colour from the buffer's attachments. Only the three
++/// systems in real use are mapped; anything else is left for the layer to
++/// guess, which is what it would do anyway.
++static void tag_colour(CVPixelBufferRef buf, struct mp_image_params *params)
++{
++    CFStringRef matrix = NULL, primaries = NULL, transfer = NULL;
++
++    switch (params->repr.sys) {
++    case PL_COLOR_SYSTEM_BT_601:
++        matrix = kCVImageBufferYCbCrMatrix_ITU_R_601_4;
++        primaries = kCVImageBufferColorPrimaries_SMPTE_C;
++        break;
++    case PL_COLOR_SYSTEM_BT_2020_NC:
++    case PL_COLOR_SYSTEM_BT_2020_C:
++        matrix = kCVImageBufferYCbCrMatrix_ITU_R_2020;
++        primaries = kCVImageBufferColorPrimaries_ITU_R_2020;
++        break;
++    default:
++        matrix = kCVImageBufferYCbCrMatrix_ITU_R_709_2;
++        primaries = kCVImageBufferColorPrimaries_ITU_R_709_2;
++        break;
++    }
++
++    switch (params->color.transfer) {
++    case PL_COLOR_TRC_PQ:
++        transfer = kCVImageBufferTransferFunction_SMPTE_ST_2084_PQ;
++        break;
++    case PL_COLOR_TRC_HLG:
++        transfer = kCVImageBufferTransferFunction_ITU_R_2100_HLG;
++        break;
++    default:
++        transfer = kCVImageBufferTransferFunction_ITU_R_709_2;
++        break;
++    }
++
++    CVBufferSetAttachment(buf, kCVImageBufferYCbCrMatrixKey, matrix,
++                          kCVAttachmentMode_ShouldPropagate);
++    CVBufferSetAttachment(buf, kCVImageBufferColorPrimariesKey, primaries,
++                          kCVAttachmentMode_ShouldPropagate);
++    CVBufferSetAttachment(buf, kCVImageBufferTransferFunctionKey, transfer,
++                          kCVAttachmentMode_ShouldPropagate);
++}
++
++/// The CoreVideo format for the two layouts this output accepts.
++static OSType cv_format_for(int imgfmt)
++{
++    switch (imgfmt) {
++    case IMGFMT_NV12:
++        return kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
++    case IMGFMT_P010:
++        return kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange;
++    default:
++        return 0;
++    }
++}
++
++static void release_pool(struct priv *p)
++{
++    if (p->pool) {
++        CVPixelBufferPoolRelease(p->pool);
++        p->pool = NULL;
++    }
++}
++
++/// Buffers must be IOSurface backed or the layer cannot display them, which
++/// fails silently rather than loudly: frames are accepted and nothing appears.
++static bool ensure_pool(struct vo *vo, int w, int h, OSType fmt)
++{
++    struct priv *p = vo->priv;
++
++    if (p->pool && p->pool_w == w && p->pool_h == h && p->pool_fmt == fmt)
++        return true;
++
++    release_pool(p);
++
++    CFMutableDictionaryRef attrs = CFDictionaryCreateMutable(
++        kCFAllocatorDefault, 4, &kCFTypeDictionaryKeyCallBacks,
++        &kCFTypeDictionaryValueCallBacks);
++    if (!attrs)
++        return false;
++
++    CFNumberRef fmt_num = CFNumberCreate(kCFAllocatorDefault, kCFNumberSInt32Type, &fmt);
++    CFNumberRef w_num = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &w);
++    CFNumberRef h_num = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &h);
++    CFDictionaryRef iosurface = CFDictionaryCreate(
++        kCFAllocatorDefault, NULL, NULL, 0, &kCFTypeDictionaryKeyCallBacks,
++        &kCFTypeDictionaryValueCallBacks);
++
++    CFDictionarySetValue(attrs, kCVPixelBufferPixelFormatTypeKey, fmt_num);
++    CFDictionarySetValue(attrs, kCVPixelBufferWidthKey, w_num);
++    CFDictionarySetValue(attrs, kCVPixelBufferHeightKey, h_num);
++    CFDictionarySetValue(attrs, kCVPixelBufferIOSurfacePropertiesKey, iosurface);
++
++    OSStatus status = CVPixelBufferPoolCreate(kCFAllocatorDefault, NULL, attrs, &p->pool);
++
++    CFRelease(fmt_num);
++    CFRelease(w_num);
++    CFRelease(h_num);
++    CFRelease(iosurface);
++    CFRelease(attrs);
++
++    if (status != kCVReturnSuccess) {
++        MP_ERR(vo, "could not create buffer pool: %d\n", (int)status);
++        p->pool = NULL;
++        return false;
++    }
++
++    p->pool_w = w;
++    p->pool_h = h;
++    p->pool_fmt = fmt;
++    return true;
++}
++
++/// Copies a software frame into a pooled buffer. Row by row, because mpv's
++/// stride and CoreVideo's are decided independently and rarely agree.
++static CVPixelBufferRef upload_image(struct vo *vo, struct mp_image *mpi)
++{
++    struct priv *p = vo->priv;
++
++    OSType fmt = cv_format_for(mpi->imgfmt);
++    if (!fmt || !ensure_pool(vo, mpi->w, mpi->h, fmt))
++        return NULL;
++
++    CVPixelBufferRef buf = NULL;
++    if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, p->pool, &buf) != kCVReturnSuccess)
++        return NULL;
++
++    if (CVPixelBufferLockBaseAddress(buf, 0) != kCVReturnSuccess) {
++        CVPixelBufferRelease(buf);
++        return NULL;
++    }
++
++    size_t planes = CVPixelBufferGetPlaneCount(buf);
++    for (size_t i = 0; i < planes && i < MP_MAX_PLANES; i++) {
++        uint8_t *dst = CVPixelBufferGetBaseAddressOfPlane(buf, i);
++        size_t dst_stride = CVPixelBufferGetBytesPerRowOfPlane(buf, i);
++        size_t rows = CVPixelBufferGetHeightOfPlane(buf, i);
++        if (!dst || !mpi->planes[i])
++            continue;
++
++        size_t src_stride = mpi->stride[i] < 0 ? 0 : (size_t)mpi->stride[i];
++        size_t copy = MPMIN(src_stride, dst_stride);
++
++        for (size_t y = 0; y < rows; y++)
++            memcpy(dst + y * dst_stride, mpi->planes[i] + y * src_stride, copy);
++    }
++
++    CVPixelBufferUnlockBaseAddress(buf, 0);
++    tag_colour(buf, &p->params);
++
++    return buf;
++}
++
+ static void release_format(struct priv *p)
+ {
+     if (p->format) {
+@@ -169,10 +340,13 @@ static int preinit(struct vo *vo)
+ 
+ static int query_format(struct vo *vo, int format)
+ {
+-    // Hardware frames only. Anything else would have to be uploaded into a
+-    // CVPixelBuffer first, and the whole reason this output exists is that
+-    // VideoToolbox has already produced one.
+-    return format == IMGFMT_VIDEOTOOLBOX;
++    // VideoToolbox frames are handed straight over. The two software layouts
++    // are the ones CoreVideo shares with mpv, and accepting only those makes
++    // mpv convert anything else into one of them on the way here, which is far
++    // better tested than a conversion written into this output.
++    return format == IMGFMT_VIDEOTOOLBOX ||
++           format == IMGFMT_NV12 ||
++           format == IMGFMT_P010;
+ }
+ 
+ static int reconfig(struct vo *vo, struct mp_image_params *params)
+@@ -180,8 +354,11 @@ static int reconfig(struct vo *vo, struct mp_image_params *params)
+     struct priv *p = vo->priv;
+ 
+     // The new stream's frames describe themselves, and the cached description
+-    // is from the last one.
++    // is from the last one. The pool goes too: its size and layout were the
++    // previous stream's.
+     release_format(p);
++    release_pool(p);
++    p->params = *params;
+ 
+     @autoreleasepool {
+         [p->layer flush];
+@@ -213,7 +390,13 @@ static void flip_page(struct vo *vo)
+         return;
+ 
+     @autoreleasepool {
+-        CVPixelBufferRef pixbuf = (CVPixelBufferRef)p->next_image->planes[3];
++        struct mp_image *mpi = p->next_image;
++        bool is_hw = mpi->imgfmt == IMGFMT_VIDEOTOOLBOX;
++
++        // Hardware frames already are the buffer. Software frames become one,
++        // and that copy is ours to release afterwards.
++        CVPixelBufferRef pixbuf = is_hw ? (CVPixelBufferRef)mpi->planes[3]
++                                        : upload_image(vo, mpi);
+ 
+         if (pixbuf && recover_if_failed(vo) && p->layer.readyForMoreMediaData) {
+             CMSampleBufferRef sample = wrap_pixel_buffer(vo, pixbuf);
+@@ -224,6 +407,9 @@ static void flip_page(struct vo *vo)
+             }
+         }
+ 
++        if (!is_hw && pixbuf)
++            CVPixelBufferRelease(pixbuf);
++
+         // Dropped rather than held when the layer is busy. Queueing behind it
+         // would show this frame late, and mpv has already moved on.
+         mp_image_unrefp(&p->next_image);
+@@ -260,6 +446,7 @@ static void uninit(struct vo *vo)
+ 
+     mp_image_unrefp(&p->next_image);
+     release_format(p);
++    release_pool(p);
+ 
+     [p->layer release];
+     p->layer = NULL;

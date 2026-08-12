@@ -29,7 +29,13 @@ struct AcknowledgementsView: View {
     private let playback: [Acknowledgement] = [
         .init(name: "mpv", license: "LGPL-3.0", url: URL(string: "https://mpv.io")!),
         .init(name: "FFmpeg", license: "LGPL-3.0", url: URL(string: "https://ffmpeg.org")!),
-        .init(name: "MPVKit", license: "LGPL-3.0", url: URL(string: "https://github.com/schembora/MPVKit")!),
+        .init(name: "MPVKit", license: "LGPL-3.0", url: URL(string: "https://github.com/mpvkit/MPVKit")!),
+    ]
+
+    /// Where the LGPL source actually is. Named separately from mpv and
+    /// MPVKit because it is the build Plankton ships, not either of those.
+    private let source: [Acknowledgement] = [
+        .init(name: "Plankton, including mpvkit/", license: "Apache-2.0", url: URL(string: "https://github.com/schembora/plankton")!),
     ]
 
     private let server: [Acknowledgement] = [
@@ -49,9 +55,14 @@ struct AcknowledgementsView: View {
                 Text("Playback")
             } footer: {
                 // The LGPL notice proper. Naming the build matters as much as
-                // naming the project: what ships is a patched mpv, and this is
-                // where the corresponding source lives.
-                Text("mpv and FFmpeg are used under the LGPL v3.0, without the optional GPL components. Plankton links a patched build of mpv; its source and the patch are in the MPVKit repository above.")
+                // naming the project: what ships is a patched mpv, so this has
+                // to point at where that build comes from rather than at mpv,
+                // and the link has to keep working.
+                Text("mpv and FFmpeg are used under the LGPL v3.0, without the optional GPL components. Plankton links a patched build of mpv. Its source, the patches applied to it and the scripts that build it are in the mpvkit directory of the Plankton repository, which is also where the built libraries are published.")
+            }
+
+            Section("Source") {
+                rows(source)
             }
 
             Section("Server") {

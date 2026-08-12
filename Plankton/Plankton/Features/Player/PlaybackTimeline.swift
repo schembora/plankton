@@ -63,6 +63,7 @@ struct PlaybackTimeline: View {
                 onEditingChanged: scrubbingChanged
             )
             .disabled(session.duration == nil)
+            .onDisappear(perform: endScrubbing)
 
             HStack {
                 Text(Self.timeText(session.position))
@@ -75,6 +76,14 @@ struct PlaybackTimeline: View {
             .foregroundStyle(.secondary)
         }
         .tint(.white)
+    }
+
+    /// The slider can be taken out from under a drag, by a rotation or by the
+    /// chrome being dismissed, and SwiftUI reports no end to a gesture whose
+    /// view is gone. Clearing on the way out keeps that from stranding the
+    /// session mid-scrub.
+    private func endScrubbing() {
+        session.isScrubbing = false
     }
 
     private func scrubbingChanged(_ isScrubbing: Bool) {

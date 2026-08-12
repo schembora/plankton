@@ -1,0 +1,227 @@
+Description: Composite mpv's OSD into the frame in vo=avfoundation, so
+ subtitles appear.
+ .
+ Drawn at video resolution rather than layer resolution. The layer's size is
+ the host's business and this output makes a point of not knowing it, and an
+ overlay drawn beside the video would be missing from the Picture in Picture
+ window, which shows the enqueued frames and nothing else.
+ .
+ The frame is only copied when there is something to draw, so a hardware frame
+ with no subtitles on screen stays a straight handoff. A decoder owned frame is
+ duplicated rather than drawn on, since it may still be referenced for
+ prediction; an uploaded frame is already ours and is drawn on in place.
+Author: Plankton
+Origin: other
+diff --git a/video/out/vo_avfoundation.m b/video/out/vo_avfoundation.m
+index ff14766..f9fe6ae 100644
+--- a/video/out/vo_avfoundation.m
++++ b/video/out/vo_avfoundation.m
+@@ -39,6 +39,12 @@
+  * belongs to the host, which needs it for Picture in Picture's transport UI
+  * and knows the playback state this output does not.
+  *
++ * Subtitles and other OSD are composited into the frame at video resolution
++ * rather than drawn over the layer. Two reasons: the layer's size is the
++ * host's business and this output makes a point of not knowing it, and an
++ * overlay drawn beside the video would be absent from the Picture in Picture
++ * window, which shows the enqueued frames and nothing else.
++ *
+  * Geometry belongs to the host too. The layer is positioned and sized by the
+  * UI framework and scales its contents according to videoGravity, so this
+  * output never sets a drawable size, and rotating the device is not something
+@@ -49,6 +55,8 @@
+ #include <CoreMedia/CoreMedia.h>
+ 
+ #include "common/common.h"
++#include "sub/draw_bmp.h"
++#include "sub/osd.h"
+ #include "video/mp_image.h"
+ #include "vo.h"
+ 
+@@ -188,6 +196,134 @@ static bool ensure_pool(struct vo *vo, int w, int h, OSType fmt)
+     return true;
+ }
+ 
++/// Points an mp_image at a locked CVPixelBuffer. No copy and no ownership:
++/// the image is a view, valid only while the buffer stays locked.
++static void image_from_pixel_buffer(struct mp_image *img, CVPixelBufferRef buf,
++                                    int imgfmt, struct mp_image_params *params)
++{
++    *img = (struct mp_image){0};
++
++    // Colour first, then format and size. mp_image_setfmt writes
++    // params.imgfmt as well as imgfmt, so copying the stream's params over the
++    // top afterwards puts the frame's own format back — the hardware one for a
++    // buffer that came from the decoder. The image then claims to be NV12 in
++    // one field and VideoToolbox in another, and osd_draw_on_image reads the
++    // one that is wrong and refuses to draw.
++    img->params = *params;
++    mp_image_setfmt(img, imgfmt);
++    mp_image_set_size(img, (int)CVPixelBufferGetWidth(buf), (int)CVPixelBufferGetHeight(buf));
++
++    size_t planes = CVPixelBufferGetPlaneCount(buf);
++    for (size_t i = 0; i < planes && i < MP_MAX_PLANES; i++) {
++        img->planes[i] = CVPixelBufferGetBaseAddressOfPlane(buf, i);
++        img->stride[i] = CVPixelBufferGetBytesPerRowOfPlane(buf, i);
++    }
++}
++
++/// The mpv format matching a CoreVideo one, for describing a buffer we are
++/// about to draw into.
++static int imgfmt_for_cv(OSType fmt)
++{
++    switch (fmt) {
++    case kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange:
++    case kCVPixelFormatType_420YpCbCr8BiPlanarFullRange:
++        return IMGFMT_NV12;
++    case kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange:
++    case kCVPixelFormatType_420YpCbCr10BiPlanarFullRange:
++        return IMGFMT_P010;
++    default:
++        return 0;
++    }
++}
++
++static void probe_osd(void *ctx, struct sub_bitmaps *imgs)
++{
++    *(bool *)ctx = true;
++}
++
++/// Whether anything would be drawn for this frame.
++///
++/// Asked before compositing so the common case stays a handoff: a hardware
++/// frame with no subtitles on screen goes straight to the layer, and only one
++/// that has something to draw pays for a copy. mpv caches the rendered
++/// bitmaps, so asking and then drawing does not rasterise twice.
++static bool has_osd(struct vo *vo, struct mp_osd_res res, double pts)
++{
++    bool any = false;
++    osd_draw(vo->osd, res, pts, 0, mp_draw_sub_formats, probe_osd, &any);
++    return any;
++}
++/// Duplicates a decoder owned frame so it can be drawn on. Only reached when
++/// there is OSD for this frame.
++static CVPixelBufferRef copy_for_compositing(struct vo *vo, CVPixelBufferRef src)
++{
++    struct priv *p = vo->priv;
++
++    OSType fmt = CVPixelBufferGetPixelFormatType(src);
++    int w = (int)CVPixelBufferGetWidth(src);
++    int h = (int)CVPixelBufferGetHeight(src);
++    if (!ensure_pool(vo, w, h, fmt))
++        return NULL;
++
++    CVPixelBufferRef dst = NULL;
++    if (CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, p->pool, &dst) != kCVReturnSuccess)
++        return NULL;
++
++    if (CVPixelBufferLockBaseAddress(src, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
++        CVPixelBufferRelease(dst);
++        return NULL;
++    }
++    if (CVPixelBufferLockBaseAddress(dst, 0) != kCVReturnSuccess) {
++        CVPixelBufferUnlockBaseAddress(src, kCVPixelBufferLock_ReadOnly);
++        CVPixelBufferRelease(dst);
++        return NULL;
++    }
++
++    size_t planes = CVPixelBufferGetPlaneCount(dst);
++    for (size_t i = 0; i < planes; i++) {
++        uint8_t *to = CVPixelBufferGetBaseAddressOfPlane(dst, i);
++        const uint8_t *from = CVPixelBufferGetBaseAddressOfPlane(src, i);
++        size_t to_stride = CVPixelBufferGetBytesPerRowOfPlane(dst, i);
++        size_t from_stride = CVPixelBufferGetBytesPerRowOfPlane(src, i);
++        size_t rows = MPMIN(CVPixelBufferGetHeightOfPlane(dst, i),
++                            CVPixelBufferGetHeightOfPlane(src, i));
++        size_t copy = MPMIN(to_stride, from_stride);
++        if (!to || !from)
++            continue;
++
++        for (size_t y = 0; y < rows; y++)
++            memcpy(to + y * to_stride, from + y * from_stride, copy);
++    }
++
++    CVPixelBufferUnlockBaseAddress(dst, 0);
++    CVPixelBufferUnlockBaseAddress(src, kCVPixelBufferLock_ReadOnly);
++
++    // The copy inherits nothing, so the colour tags have to be restored or the
++    // layer would render a correctly decoded frame with the wrong matrix.
++    CVBufferPropagateAttachments(src, dst);
++
++    return dst;
++}
++
++/// Draws mpv's OSD into a buffer we own.
++static void composite_osd(struct vo *vo, CVPixelBufferRef buf, struct mp_osd_res res, double pts)
++{
++    struct priv *p = vo->priv;
++
++    int imgfmt = imgfmt_for_cv(CVPixelBufferGetPixelFormatType(buf));
++    if (!imgfmt)
++        return;
++
++    if (CVPixelBufferLockBaseAddress(buf, 0) != kCVReturnSuccess)
++        return;
++
++    struct mp_image img;
++    image_from_pixel_buffer(&img, buf, imgfmt, &p->params);
++    osd_draw_on_image(vo->osd, res, pts, 0, &img);
++
++    CVPixelBufferUnlockBaseAddress(buf, 0);
++}
++
+ /// Copies a software frame into a pooled buffer. Row by row, because mpv's
+ /// stride and CoreVideo's are decided independently and rarely agree.
+ static CVPixelBufferRef upload_image(struct vo *vo, struct mp_image *mpi)
+@@ -228,6 +364,7 @@ static CVPixelBufferRef upload_image(struct vo *vo, struct mp_image *mpi)
+     return buf;
+ }
+ 
++
+ static void release_format(struct priv *p)
+ {
+     if (p->format) {
+@@ -393,11 +530,33 @@ static void flip_page(struct vo *vo)
+         struct mp_image *mpi = p->next_image;
+         bool is_hw = mpi->imgfmt == IMGFMT_VIDEOTOOLBOX;
+ 
++        // At video resolution, so subtitles scale with the picture and this
++        // output stays ignorant of how large the layer is.
++        struct mp_osd_res res = {
++            .w = mpi->w,
++            .h = mpi->h,
++            .display_par = 1.0,
++        };
++        bool draw_osd = has_osd(vo, res, mpi->pts);
++
+         // Hardware frames already are the buffer. Software frames become one,
+         // and that copy is ours to release afterwards.
+         CVPixelBufferRef pixbuf = is_hw ? (CVPixelBufferRef)mpi->planes[3]
+                                         : upload_image(vo, mpi);
+ 
++        // A decoder owned frame may still be referenced for prediction, so it
++        // is duplicated rather than drawn on. An uploaded one is already ours.
++        if (draw_osd && pixbuf) {
++            if (is_hw) {
++                CVPixelBufferRef drawable = copy_for_compositing(vo, pixbuf);
++                if (drawable) {
++                    pixbuf = drawable;
++                    is_hw = false;
++                }
++            }
++            composite_osd(vo, pixbuf, res, mpi->pts);
++        }
++
+         if (pixbuf && recover_if_failed(vo) && p->layer.readyForMoreMediaData) {
+             CMSampleBufferRef sample = wrap_pixel_buffer(vo, pixbuf);
+             if (sample) {
+@@ -407,6 +566,9 @@ static void flip_page(struct vo *vo)
+             }
+         }
+ 
++        // Anything we made rather than were handed. Safe to drop now: the
++        // sample buffer retains the pixel buffer, so the layer keeps its own
++        // reference for as long as it needs one.
+         if (!is_hw && pixbuf)
+             CVPixelBufferRelease(pixbuf);
+ 

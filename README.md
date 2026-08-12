@@ -7,6 +7,7 @@ A native Jellyfin client for iPhone and iPad, built with SwiftUI. Plankton focus
 - Connect to your Jellyfin server by address or automatic discovery on your local network
 - Browse your movie and TV show libraries with a fluid, Liquid Glass UI
 - Play the original file untouched — Matroska, HEVC, AV1, DTS, TrueHD — so the server copies bytes instead of re-encoding, and playback starts sooner
+- Picture in Picture, and full lock screen and Control Center controls, on the direct engine as well as on AVPlayer
 - Embedded subtitles, including styled ASS/SSA and image-based PGS, with a size control in the player
 - Live TV: browse the channel line-up with what's on now, and change channel without leaving the player
 - Download movies and episodes at their original quality, playable offline
@@ -18,9 +19,11 @@ A native Jellyfin client for iPhone and iPad, built with SwiftUI. Plankton focus
 
 Plankton ships two, chosen in Settings:
 
-**Direct** (the default) decodes on the device with a bundled [mpv](https://mpv.io), using VideoToolbox for hardware decoding and libplacebo for rendering. The server hands over the file as it is, so nothing is transcoded and nothing waits on the server's CPU.
+**Direct** (the default) decodes on the device with a bundled [mpv](https://mpv.io), using VideoToolbox. The server hands over the file as it is, so nothing is transcoded and nothing waits on the server's CPU.
 
-**Server** uses AVPlayer over the HLS stream Jellyfin produces. It transcodes far more, but keeps Picture in Picture, AirPlay and the native track menus that come with AVKit.
+mpv renders through a video output written for Plankton, which hands decoded frames straight to an `AVSampleBufferDisplayLayer`. That is what buys back Picture in Picture: the system only composites video it owns, and reads from that layer or an `AVPlayerLayer` and from nothing else. Since VideoToolbox already produces `CVPixelBuffer`s, this is a handoff rather than a conversion. Software decoded frames, for the codecs VideoToolbox has no hardware path for, are uploaded instead, and subtitles are composited into the frame so they survive into the Picture in Picture window.
+
+**Server** uses AVPlayer over the HLS stream Jellyfin produces. It transcodes far more, but keeps AirPlay and the native track menus that come with AVKit.
 
 Live TV always plays directly: it's an unbounded MPEG-TS stream, and AVPlayer plays progressive HTTP by asking for byte ranges that a stream with no end can't answer.
 
@@ -50,6 +53,9 @@ xcodebuild -project Plankton/Plankton.xcodeproj -scheme Plankton \
 ## Project Structure
 
 ```
+mpvkit/          Vendored MPVKit build: manifest, build scripts and the patch
+                 series applied to libmpv. The xcframeworks are fetched from
+                 this repository's releases rather than committed.
 Plankton/Plankton/
 ├── Core/        Jellyfin service, playback engines, downloads, session & Keychain,
 │                server discovery, device profiles, item helpers
@@ -60,9 +66,25 @@ Plankton/Plankton/
 ## Dependencies
 
 - [jellyfin-sdk-swift](https://github.com/jellyfin/jellyfin-sdk-swift) for all server communication
-- [MPVKit](https://github.com/mpvkit/MPVKit) for libmpv and FFmpeg
+- [MPVKit](https://github.com/mpvkit/MPVKit) for libmpv and FFmpeg, vendored into `mpvkit/`
 
-`Libmpv` resolves to a [fork](https://github.com/schembora/MPVKit) carrying one patch: MPVKit's MoltenVK context never tells mpv that its layer has resized, so rotating the device leaves the video laid out for the previous orientation. Everything else comes from upstream MPVKit. The patch is not yet upstreamed.
+MPVKit lives in this repository rather than being consumed as a package, because
+libmpv carries patches written for Plankton. `mpvkit/NOTICE.md` lists each one
+with its origin and licence; in short they add the AVFoundation video output
+described above, software frame upload, subtitle compositing, and registration
+of the VideoToolbox decode device, which mpv otherwise only accepts from a GPU
+video output.
+
+The patched `Libmpv` is built from `mpvkit/` and published to this repository's
+releases, so the patch and the binary it produced stay together. Everything else
+resolves to upstream MPVKit. To rebuild:
+
+```sh
+cd mpvkit && make build platform=ios,isimulator
+```
+
+Patches are applied only on a fresh clone, so delete the extracted source first
+if you change one. See `mpvkit/NOTICE.md`.
 
 ## Contributing
 
@@ -79,4 +101,4 @@ Bug reports and feature requests can go in [GitHub Issues](https://github.com/sc
 
 Plankton is released under the [Apache License 2.0](LICENSE).
 
-It bundles mpv and FFmpeg under the LGPL v3.0, without the optional GPL components, via MPVKit. The app credits them in Settings → About → Acknowledgements, and the source the binaries were built from is in the [MPVKit fork](https://github.com/schembora/MPVKit) above.
+It bundles mpv and FFmpeg under the LGPL v3.0, without the optional GPL components. The app credits them in Settings → About → Acknowledgements. The source the binaries were built from, the patches applied to it and the scripts that build it are all in `mpvkit/`, which is what makes the static linking permissible: anyone can rebuild those libraries from modified sources and relink them.

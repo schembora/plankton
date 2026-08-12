@@ -219,7 +219,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				AA11AA11AA11AA11AA11AA01 /* XCRemoteSwiftPackageReference "jellyfin-sdk-swift" */,
-				AA11AA11AA11AA11AA11AA04 /* XCRemoteSwiftPackageReference "MPVKit" */,
+				AA11AA11AA11AA11AA11AA04 /* XCLocalSwiftPackageReference "../mpvkit" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D21B1CF6301169F500E15E3C /* Products */;
@@ -603,6 +603,13 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCLocalSwiftPackageReference section */
+		AA11AA11AA11AA11AA11AA04 /* XCLocalSwiftPackageReference "../mpvkit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ../mpvkit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
 /* Begin XCRemoteSwiftPackageReference section */
 		AA11AA11AA11AA11AA11AA01 /* XCRemoteSwiftPackageReference "jellyfin-sdk-swift" */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -610,14 +617,6 @@
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 2.1.0;
-			};
-		};
-		AA11AA11AA11AA11AA11AA04 /* XCRemoteSwiftPackageReference "MPVKit" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/schembora/MPVKit";
-			requirement = {
-				kind = exactVersion;
-				version = "1.0.0-resize.1";
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
@@ -630,7 +629,6 @@
 		};
 		AA11AA11AA11AA11AA11AA05 /* MPVKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = AA11AA11AA11AA11AA11AA04 /* XCRemoteSwiftPackageReference "MPVKit" */;
 			productName = MPVKit;
 		};
 /* End XCSwiftPackageProductDependency section */

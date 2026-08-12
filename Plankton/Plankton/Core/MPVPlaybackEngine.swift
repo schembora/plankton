@@ -5,6 +5,7 @@
 //  Playback through a bundled mpv, decoding the original file on the device.
 //
 
+import AVKit
 import Foundation
 import Libmpv
 import OSLog
@@ -12,15 +13,23 @@ import UIKit
 
 private let logger = Logger(subsystem: "com.schembor.Plankton", category: "Player")
 
-/// mpv draws into a `CAMetalLayer` we hand it and decodes with VideoToolbox, so
-/// the server can hand over its original file untouched — no transcode, no
-/// remux, no HLS. What it costs is everything AVKit gave away for free:
-/// Picture in Picture, AirPlay, and the native track picker.
+/// mpv draws into an `AVSampleBufferDisplayLayer` we hand it and decodes with
+/// VideoToolbox, so the server can hand over its original file untouched — no
+/// transcode, no remux, no HLS.
+///
+/// The layer is what buys back Picture in Picture. The system only composites
+/// video it owns, and a `CAMetalLayer` is not that however good the picture
+/// drawn into it: PiP reads from a sample buffer layer or an `AVPlayerLayer`
+/// and from nothing else. Our own `vo=avfoundation` puts decoded frames into
+/// one, which is a handoff rather than a conversion, since VideoToolbox has
+/// already produced `CVPixelBuffer`s.
+///
+/// AirPlay and the native track picker are still AVKit's alone.
 @MainActor
 final class MPVPlaybackEngine: PlaybackEngine {
 
     private let url: URL
-    private let renderView = MPVRenderView()
+    private let renderView = MPVSampleBufferView()
 
     /// libmpv's handle, read from mpv's own event thread as well as from the
     /// main actor. Written only in `configure` and `tearDown` — and `tearDown`
@@ -36,6 +45,16 @@ final class MPVPlaybackEngine: PlaybackEngine {
     private var progressTimers: [DispatchSourceTimer] = []
     private var lifecycleObservers: [any NSObjectProtocol] = []
 
+    /// Pending decision to stop decoding video, deferred so Picture in Picture
+    /// has time to claim it, and cancelled if the app comes back.
+    private var backgroundVideoTask: Task<Void, Never>?
+
+    /// Drives Picture in Picture's transport. Held because PiP reads the
+    /// position from it and there is nothing else to read.
+    private var timebase: CMTimebase?
+    private var pictureInPicture: AVPictureInPictureController?
+    private let pictureInPictureDelegate = PictureInPictureDelegate()
+
     private var stateHandlers: [() -> Void] = []
     private var failureHandlers: [(String) -> Void] = []
 
@@ -50,24 +69,23 @@ final class MPVPlaybackEngine: PlaybackEngine {
     private var hasIssuedLoad = false
     private var isFileOpen = false
 
+    /// Kept so the decoder is reported once per file rather than on every
+    /// seek, which is also a playback restart.
+    private var lastReportedDecoder: String?
+
     private enum Property {
         static let pause = "pause"
         static let coreIdle = "core-idle"
         static let duration = "duration"
         static let timePos = "time-pos"
-        static let start = "start"
+        static let hwdecCurrent = "hwdec-current"
+        static let hwdec = "hwdec"
         static let videoTrack = "vid"
+        static let start = "start"
         static let trackList = "track-list"
         static let subtitleTrack = "sid"
         static let audioTrack = "aid"
         static let subtitleScale = "sub-scale"
-        static let keepAspect = "keepaspect"
-        static let panscan = "panscan"
-
-        /// The size mpv believes its window is, as opposed to the layer's own.
-        /// The two disagreeing is what puts the picture in a corner.
-        static let osdWidth = "osd-dimensions/w"
-        static let osdHeight = "osd-dimensions/h"
     }
 
     /// One entry of mpv's `track-list`, which comes back as JSON when the
@@ -109,26 +127,38 @@ final class MPVPlaybackEngine: PlaybackEngine {
 
         // mpv takes the render target as an integer "window id". The engine
         // owns the view backing the layer, so it outlives the handle.
-        var windowID = Int64(Int(bitPattern: Unmanaged.passUnretained(renderView.layer).toOpaque()))
+        var windowID = Int64(Int(bitPattern: Unmanaged.passUnretained(renderView.displayLayer).toOpaque()))
         mpv_set_option(handle, "wid", MPV_FORMAT_INT64, &windowID)
 
-        // gpu-next reaches Metal through MoltenVK: mpv has no native Metal
-        // backend, and its OpenGL ES one is deprecated on iOS.
-        setOption("vo", "gpu-next")
-        setOption("gpu-api", "vulkan")
-        setOption("gpu-context", "moltenvk")
+        // Our own video output, which enqueues frames into the layer above.
+        // Nothing to configure beyond the name: it takes no GPU context,
+        // because it never renders anything itself.
+        setOption("vo", "avfoundation")
+
+        // What makes the lock screen work.
+        //
+        // mpv's audiounit output configures the audio session itself, after
+        // ours, and without this it adds `MixWithOthers` to the category. That
+        // option declares the app a secondary audio source, and iOS never
+        // promotes one of those to the now playing app: audio plays, it keeps
+        // playing in the background, and the entry we publish is complete and
+        // correct, but neither the lock screen nor Control Center will show
+        // it. Nothing on the publishing side can win that argument, because
+        // the category is set by the decoder after the player has configured
+        // it.
+        //
+        // Exclusive is also the honest setting for a video player, which
+        // should not be mixing itself under someone else's music.
+        setOption("audio-exclusive", "yes")
 
         // The entire point of this engine — VideoToolbox decodes on device, so
         // the server never re-encodes.
         setOption("hwdec", "videotoolbox")
 
-        // HDR passthrough (`target-colorspace-hint`) is deliberately left off.
-        // Asking for a non-default colorspace makes MoltenVK set one on the
-        // layer from mpv's render thread, and UIKit raises on layer properties
-        // being touched off the main thread. The setter it uses is private, so
-        // it can't be funnelled to the main thread the way the EDR flag is.
-        // HDR content plays tone-mapped instead, which is the same trade other
-        // iOS mpv clients make.
+        // `target-colorspace-hint` stays off, but for a different reason than
+        // it used to: there is no GPU output left to hint at. Colour reaches
+        // the layer as attachments on each frame, which is where AVFoundation
+        // reads it from.
 
         // Match the subtitle behaviour users get from other Jellyfin clients:
         // prefer the system language, fall back rather than showing nothing.
@@ -162,47 +192,114 @@ final class MPVPlaybackEngine: PlaybackEngine {
             Unmanaged<MPVPlaybackEngine>.fromOpaque(context).takeUnretainedValue().drainEvents()
         }, Unmanaged.passUnretained(self).toOpaque())
 
+        configurePictureInPicture()
         observeAppLifecycle()
-        observeGeometry()
     }
 
-    /// Logs the layer's size next to mpv's own idea of its window after every
-    /// layout. When those two disagree the video is laid out for one size and
-    /// drawn into another, which is what a rotation leaving the picture in a
-    /// corner looks like.
-    private func observeGeometry() {
-        #if DEBUG
-        renderView.onLayout = { [weak self] renderSize, scale in
-            guard let self else { return }
-
-            let mpvWidth = self.double(Property.osdWidth)
-            let mpvHeight = self.double(Property.osdHeight)
-            // Info rather than debug: debug-level messages aren't captured by
-            // default, and this exists to be read.
-            logger.info(
-                """
-                geometry: layer \(Int(renderSize.width))x\(Int(renderSize.height)) @\(scale, format: .fixed(precision: 1))x \
-                | mpv \(Int(mpvWidth))x\(Int(mpvHeight))
-                """
-            )
-        }
-        #endif
-    }
-
-    /// MoltenVK can't present while the app is backgrounded, and coming back
-    /// with the video track still attached leaves a black picture. Dropping the
-    /// track on the way out keeps audio playing and restores cleanly.
+    /// Keeps hardware decoding working across a trip to the background.
+    ///
+    /// iOS invalidates VideoToolbox decompression sessions when an app is
+    /// backgrounded. A decoder left running comes back with
+    /// kVTInvalidSessionErr, and mpv responds by abandoning hardware decoding
+    /// for the rest of the file, so the only symptom is the file playing on
+    /// the CPU from then on.
+    ///
+    /// Two halves, because either alone is wrong. Dropping the video track
+    /// avoids decoding frames nobody can see, but Picture in Picture is
+    /// showing them and must not lose the track. Re-asserting `hwdec` on the
+    /// way back repairs a session that was invalidated anyway, which is what
+    /// covers the case where the first half decides wrongly.
     private func observeAppLifecycle() {
         let center = NotificationCenter.default
 
         lifecycleObservers = [
             center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.setOption(Property.videoTrack, "no") }
+                MainActor.assumeIsolated { self?.stopDecodingVideoIfUnwatched() }
             },
             center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.setOption(Property.videoTrack, "auto") }
+                MainActor.assumeIsolated { self?.resumeDecodingVideo() }
             },
         ]
+    }
+
+    /// Waits before giving up on the video track. The system starts Picture in
+    /// Picture as the app leaves the foreground, so asking immediately can
+    /// catch it before it has said it is active, and dropping the track then
+    /// would take the picture out of the window as it opened.
+    private func stopDecodingVideoIfUnwatched() {
+        backgroundVideoTask?.cancel()
+        backgroundVideoTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+
+            guard !Task.isCancelled, let self,
+                  self.pictureInPicture?.isPictureInPictureActive != true
+            else { return }
+
+            self.setPropertyOffMain(Property.videoTrack, "no")
+        }
+    }
+
+    private func resumeDecodingVideo() {
+        backgroundVideoTask?.cancel()
+        backgroundVideoTask = nil
+
+        setPropertyOffMain(Property.videoTrack, "auto")
+
+        // Only when it actually fell back, so a healthy session is not torn
+        // down for nothing. Off and on again, because setting an option to the
+        // value it already holds is not a change, and mpv reinitialises the
+        // decoder on the change.
+        guard isFileOpen, string(Property.hwdecCurrent) != "videotoolbox" else { return }
+
+        logger.info("hardware decoding was lost in the background; reinitialising")
+        setPropertyOffMain(Property.hwdec, "no")
+        setPropertyOffMain(Property.hwdec, "videotoolbox")
+    }
+
+    /// Picture in Picture, which is the whole reason this engine renders into a
+    /// sample buffer layer.
+    ///
+    /// Started automatically on the way out of the app rather than from a
+    /// button: leaving mid-episode is exactly when it is wanted, and a button
+    /// would be one more thing drawn over the video. The layer's control
+    /// timebase is set here too, since PiP's own transport reads the position
+    /// from it and mpv has no way to tell it anything.
+    private func configurePictureInPicture() {
+        guard AVPictureInPictureController.isPictureInPictureSupported() else {
+            logger.info("Picture in Picture is unavailable on this device")
+            return
+        }
+
+        var timebase: CMTimebase?
+        CMTimebaseCreateWithSourceClock(
+            allocator: kCFAllocatorDefault,
+            sourceClock: CMClockGetHostTimeClock(),
+            timebaseOut: &timebase
+        )
+        if let timebase {
+            CMTimebaseSetRate(timebase, rate: 0)
+            renderView.displayLayer.controlTimebase = timebase
+            self.timebase = timebase
+        }
+
+        pictureInPictureDelegate.engine = self
+        let source = AVPictureInPictureController.ContentSource(
+            sampleBufferDisplayLayer: renderView.displayLayer,
+            playbackDelegate: pictureInPictureDelegate
+        )
+        let controller = AVPictureInPictureController(contentSource: source)
+        controller.canStartPictureInPictureAutomaticallyFromInline = true
+        pictureInPicture = controller
+    }
+
+    /// Keeps PiP's scrubber honest. The timebase is the only thing it reads a
+    /// position from, and nothing else moves it.
+    func syncTimebase() {
+        guard let timebase else { return }
+
+        CMTimebaseSetTime(timebase, time: CMTime(seconds: currentTime, preferredTimescale: 1000))
+        CMTimebaseSetRate(timebase, rate: isPlaying ? 1 : 0)
+        pictureInPicture?.invalidatePlaybackState()
     }
 
     // MARK: - State
@@ -235,6 +332,7 @@ final class MPVPlaybackEngine: PlaybackEngine {
     func play() {
         if !hasIssuedLoad {
             hasIssuedLoad = true
+        lastReportedDecoder = nil
 
             // Opening at a position is mpv's job, and has to be set before the
             // file is handed over.
@@ -317,21 +415,19 @@ final class MPVPlaybackEngine: PlaybackEngine {
         setProperty(Property.subtitleScale, String(format: "%.2f", scale))
     }
 
-    /// `panscan` zooms until the frame is covered and crops the overhang;
-    /// `keepaspect` off lets the picture distort to fit. They're separate
-    /// properties, so both get set every time rather than left where the last
-    /// choice put them.
+    /// Set on the layer rather than through mpv's `panscan` and `keepaspect`.
+    /// Those make the video output scale the picture itself, which on this
+    /// output means a full re-render of every frame through Core Image, and
+    /// costs HDR passthrough on the way. `videoGravity` is the layer doing the
+    /// same job in the compositor for nothing.
     func setVideoFill(_ fill: VideoFill) {
         switch fill {
         case .fit:
-            setPropertyOffMain(Property.keepAspect, "yes")
-            setPropertyOffMain(Property.panscan, "0")
+            renderView.displayLayer.videoGravity = .resizeAspect
         case .fill:
-            setPropertyOffMain(Property.keepAspect, "yes")
-            setPropertyOffMain(Property.panscan, "1")
+            renderView.displayLayer.videoGravity = .resizeAspectFill
         case .stretch:
-            setPropertyOffMain(Property.keepAspect, "no")
-            setPropertyOffMain(Property.panscan, "0")
+            renderView.displayLayer.videoGravity = .resize
         }
     }
 
@@ -361,10 +457,17 @@ final class MPVPlaybackEngine: PlaybackEngine {
         }
         progressTimers.removeAll()
 
+        backgroundVideoTask?.cancel()
+        backgroundVideoTask = nil
+
         for observer in lifecycleObservers {
             NotificationCenter.default.removeObserver(observer)
         }
         lifecycleObservers.removeAll()
+
+        pictureInPicture?.stopPictureInPicture()
+        pictureInPicture = nil
+        timebase = nil
         stateHandlers.removeAll()
         failureHandlers.removeAll()
 
@@ -412,7 +515,22 @@ final class MPVPlaybackEngine: PlaybackEngine {
         }
     }
 
+    /// Whether the decoder took the hardware path, said once per file.
+    ///
+    /// Not at file load: `hwdec-current` is unavailable until the decoder
+    /// exists, and reading it there answers nothing rather than "no". Worth
+    /// stating at all because software decoding looks identical — the video
+    /// output uploads those frames and renders them correctly — and shows up
+    /// only as heat and battery.
+    private func reportDecoder() {
+        guard let current = string(Property.hwdecCurrent), current != lastReportedDecoder else { return }
+
+        lastReportedDecoder = current
+        logger.info("hwdec: \(current, privacy: .public)")
+    }
+
     private func notifyState() {
+        syncTimebase()
         for handler in stateHandlers {
             handler()
         }
@@ -456,7 +574,10 @@ final class MPVPlaybackEngine: PlaybackEngine {
         // mpv's answer to AVPlayer's seek completion — the position is only
         // trustworthy once playback restarts.
         case MPV_EVENT_PROPERTY_CHANGE, MPV_EVENT_PLAYBACK_RESTART:
-            Task { @MainActor in self.notifyState() }
+            Task { @MainActor in
+                self.notifyState()
+                self.reportDecoder()
+            }
 
         case MPV_EVENT_END_FILE:
             guard let ending = UnsafePointer<mpv_event_end_file>(OpaquePointer(event.data))?.pointee,
@@ -519,14 +640,9 @@ final class MPVPlaybackEngine: PlaybackEngine {
         check(mpv_set_property_string(handle, name, value), "set \(name)")
     }
 
-    /// For properties the video output has to reconfigure for.
-    ///
-    /// mpv's setters are synchronous and block until the core has applied
-    /// them. Anything that makes the VO rebuild its render passes blocks on
-    /// the VO thread, which needs the main thread to present — so setting one
-    /// from the main thread hangs the two against each other. Cheap properties
-    /// stay synchronous, since answering immediately is what lets a track
-    /// selection be read straight back.
+    /// Changing the video track or the decoder makes the video output
+    /// reconfigure, and mpv's setters block until that lands. Off the main
+    /// thread so the two cannot wait on each other.
     private func setPropertyOffMain(_ name: String, _ value: String) {
         guard let handle else { return }
 
@@ -557,111 +673,113 @@ final class MPVPlaybackEngine: PlaybackEngine {
     }
 }
 
-private final class MPVMetalLayer: CAMetalLayer {
-
-    /// Works around MoltenVK dropping the drawable to 1x1 to force a
-    /// presentation, which otherwise leaves the picture flickering or stuck at
-    /// that size. See https://github.com/mpv-player/mpv/pull/13651
-    override var drawableSize: CGSize {
-        get { super.drawableSize }
-        set {
-            guard newValue.width > 1, newValue.height > 1 else { return }
-            super.drawableSize = newValue
-        }
-    }
-
-    /// mpv flips this from its render thread, but the screen only actually
-    /// enters EDR mode when the change is made on the main thread — off it,
-    /// HDR content silently plays back tone-mapped.
-    ///
-    /// Dispatched rather than waited on: mpv's render thread must never block
-    /// on the main thread, which tears playback down and waits on mpv while
-    /// doing so. Blocking here deadlocks the two against each other. EDR
-    /// engaging a frame later is not something anyone can see.
-    override var wantsExtendedDynamicRangeContent: Bool {
-        get { super.wantsExtendedDynamicRangeContent }
-        set {
-            if Thread.isMainThread {
-                super.wantsExtendedDynamicRangeContent = newValue
-            } else {
-                DispatchQueue.main.async {
-                    super.wantsExtendedDynamicRangeContent = newValue
-                }
-            }
-        }
-    }
-}
-
 /// The view mpv renders into.
 ///
-/// Backing the view with the Metal layer rather than adding a sublayer to it
-/// means UIKit maintains the layer's bounds and `contentsScale` itself. Doing
-/// that by hand left mpv rendering against a mis-scaled surface, which sized
-/// the subtitle overlay against the wrong resolution.
-private final class MPVRenderView: UIView {
+/// Backed by an `AVSampleBufferDisplayLayer` rather than hosting one, so UIKit
+/// maintains its bounds and the compositor scales the picture according to
+/// `videoGravity`. Nothing here sizes a drawable or tracks `contentsScale`: the
+/// layer takes frames at their own resolution and fits them to itself, which is
+/// what makes a rotation something this engine no longer has to notice.
+private final class MPVSampleBufferView: UIView {
 
-    /// Reports the render size and scale after each layout, so the engine can
-    /// hold them up against what mpv thinks its window is.
-    var onLayout: ((_ renderSize: CGSize, _ scale: CGFloat) -> Void)?
+    override class var layerClass: AnyClass { AVSampleBufferDisplayLayer.self }
 
-    override class var layerClass: AnyClass { MPVMetalLayer.self }
+    var displayLayer: AVSampleBufferDisplayLayer {
+        layer as! AVSampleBufferDisplayLayer
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .black
         isOpaque = true
+        displayLayer.videoGravity = .resizeAspect
 
-        if let metalLayer = layer as? CAMetalLayer {
-            metalLayer.framebufferOnly = true
-        }
-        applyContentsScale()
+        // Unlike the Metal path, this is a plain main-thread property on a
+        // layer we own, set once. mpv never touches it, so there is no render
+        // thread to race and no reason to defer it.
+        //
+        // `constrainedHigh` rather than `high`: the video shares the screen
+        // with our own controls, and asking for the full range would have the
+        // system raise the whole display's brightness to suit it.
+        displayLayer.preferredDynamicRange = .constrainedHigh
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
-        fatalError("MPVRenderView is not loaded from a nib")
+        fatalError("MPVSampleBufferView is not loaded from a nib")
+    }
+}
+
+// MARK: - Picture in Picture
+
+/// PiP drives the player through this while its window is up: the on-screen
+/// controls are gone, and its own transport is all there is.
+///
+/// A separate object because the delegate protocol demands an `NSObject`, and
+/// the engine is not one. Forwarding costs a few lines and keeps PiP from
+/// dictating the engine's inheritance.
+private final class PictureInPictureDelegate: NSObject, AVPictureInPictureSampleBufferPlaybackDelegate {
+
+    /// Weak: the engine owns this, and PiP outliving it would mean driving a
+    /// player that has already torn its mpv handle down.
+    weak var engine: MPVPlaybackEngine?
+
+    func pictureInPictureController(
+        _ controller: AVPictureInPictureController,
+        setPlaying playing: Bool
+    ) {
+        MainActor.assumeIsolated {
+            guard let engine else { return }
+            if playing {
+                engine.play()
+            } else {
+                engine.pause()
+            }
+            engine.syncTimebase()
+        }
     }
 
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        applyContentsScale()
+    /// The whole file, so PiP's scrubber spans what can actually be reached. A
+    /// live stream has no such range, and positive infinity is how that is
+    /// stated here.
+    func pictureInPictureControllerTimeRangeForPlayback(
+        _ controller: AVPictureInPictureController
+    ) -> CMTimeRange {
+        MainActor.assumeIsolated {
+            guard let duration = engine?.duration, duration > 0 else {
+                return CMTimeRange(start: .zero, duration: .positiveInfinity)
+            }
+            return CMTimeRange(
+                start: .zero,
+                duration: CMTime(seconds: duration, preferredTimescale: 1000)
+            )
+        }
     }
 
-    override func layoutSubviews() {
-        super.layoutSubviews()
-
-        // Bounds animate through a rotation, and mpv presents continuously into
-        // the layer while they do. Without this the picture tears and lands
-        // mid-animation, at a size neither orientation agrees with.
-        //
-        // `drawableSize` is deliberately left alone. MoltenVK assigns it while
-        // building a swapchain, on mpv's render thread; writing it from here as
-        // well raced that, and a render pass sized for one drawable would run
-        // against another. mpv reads bounds and scale instead, and MoltenVK
-        // stays the only writer.
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        applyContentsScale()
-        CATransaction.commit()
-
-        // The size mpv derives for itself, which is not the drawable's: those
-        // are two different things now, and this is the one driving the resize.
-        let scale = layer.contentsScale
-        onLayout?(CGSize(width: bounds.width * scale, height: bounds.height * scale), scale)
+    func pictureInPictureControllerIsPlaybackPaused(
+        _ controller: AVPictureInPictureController
+    ) -> Bool {
+        MainActor.assumeIsolated { !(engine?.isPlaying ?? false) }
     }
 
-    /// mpv renders at bounds times `contentsScale`, and builds its swapchain
-    /// the moment it's handed the layer — before the view has a window, while
-    /// UIKit still has the scale at 1. Left alone the video renders at point
-    /// resolution and Core Animation upscales it, which is the difference
-    /// between sharp and soft.
-    ///
-    /// `nativeScale` rather than `scale`: they differ on the models that render
-    /// above panel resolution, and the panel's is what decides how many pixels
-    /// actually reach the glass.
-    private func applyContentsScale() {
-        let scale = window?.screen.nativeScale ?? traitCollection.displayScale
-        guard scale > 0, layer.contentsScale != scale else { return }
-        layer.contentsScale = scale
+    func pictureInPictureController(
+        _ controller: AVPictureInPictureController,
+        didTransitionToRenderSize newRenderSize: CMVideoDimensions
+    ) {
+        // The layer fits the picture to whatever size it is given, so there is
+        // nothing to reconfigure.
+    }
+
+    func pictureInPictureController(
+        _ controller: AVPictureInPictureController,
+        skipByInterval skipInterval: CMTime,
+        completion completionHandler: @escaping () -> Void
+    ) {
+        MainActor.assumeIsolated {
+            guard let engine else { return }
+            engine.seek(to: engine.currentTime + skipInterval.seconds)
+            engine.syncTimebase()
+        }
+        completionHandler()
     }
 }

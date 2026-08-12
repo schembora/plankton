@@ -10,7 +10,6 @@ import Foundation
 import JellyfinAPI
 import Observation
 import OSLog
-
 private let logger = Logger(subsystem: "com.schembor.Plankton", category: "Player")
 
 /// How often the on-screen controls resample the engine's clock — smooth enough
@@ -45,6 +44,11 @@ final class PlaybackSession {
 
     /// Set while the user drags the scrubber. The engine's clock is ignored
     /// until they let go, otherwise the thumb fights the playhead.
+    ///
+    /// Anything that clears this has to be certain, because it suppresses the
+    /// clock: a drag whose trailing callback never arrives, which is what a
+    /// cancelled gesture is, would otherwise freeze the displayed time for the
+    /// rest of the playthrough while the video carried on.
     var isScrubbing = false
 
     /// What's playing right now. Not the item the session was opened with:
@@ -100,6 +104,12 @@ final class PlaybackSession {
     /// The player can disappear more than once — a dismiss and a teardown can
     /// both land — and the stop report must only go out once.
     @ObservationIgnored private var hasEnded = false
+
+    @ObservationIgnored private var audioObservers: [any NSObjectProtocol] = []
+
+    /// Whether the interruption is ours to undo. Resuming something the user
+    /// paused themselves, just because a call ended, is worse than leaving it.
+    @ObservationIgnored private var wasPlayingBeforeInterruption = false
 
     init(
         playback: PlaybackItem,
@@ -160,9 +170,8 @@ final class PlaybackSession {
 
         engine.setSubtitleScale(settings.subtitleScale)
 
-        if let metadata = current.metadata {
-            nowPlaying.start(metadata, for: engine, artwork: artwork)
-        }
+        startNowPlaying(artwork: artwork)
+        observeAudioSession()
 
         // Resume where the server says we left off, before play, so the start
         // report carries the resume point rather than zero.
@@ -191,7 +200,34 @@ final class PlaybackSession {
         endReporting()
         releaseLiveStream()
         nowPlaying.stop()
+
+        for observer in audioObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        audioObservers.removeAll()
+
         engine.tearDown()
+    }
+
+    /// Publishes the current item to the lock screen, wired to the queue so
+    /// the next episode or channel is reachable without unlocking.
+    private func startNowPlaying(artwork: ImageCache) {
+        guard let metadata = current.nowPlayingMetadata else { return }
+
+        nowPlaying.start(
+            metadata,
+            for: engine,
+            artwork: artwork,
+            queue: queue.isEmpty ? nil : NowPlayingQueue(
+                goToPrevious: { [weak self] in
+                    Task { await self?.goToPreviousInQueue() }
+                },
+                goToNext: { [weak self] in
+                    Task { await self?.goToNextInQueue() }
+                }
+            )
+        )
+        nowPlaying.setQueueAvailability(previous: hasPreviousInQueue, next: hasNextInQueue)
     }
 
     /// Hands a live stream back to the server. It ties up a tuner until it gets
@@ -222,6 +258,11 @@ final class PlaybackSession {
 
     func seek(to seconds: TimeInterval) {
         let target = min(max(0, seconds), duration ?? .greatestFiniteMagnitude)
+
+        // A seek is the end of a scrub by definition, and it also arrives from
+        // the skip buttons and the lock screen. Clearing it here means the
+        // clock restarts even if the slider never reported letting go.
+        isScrubbing = false
 
         // Move the thumb now: engines report the new position only once the
         // seek lands, which is long enough to look like a dropped input.
@@ -265,11 +306,12 @@ final class PlaybackSession {
 
         guard let next = await resolve(entry) else { return }
         current = next
+        duration = nil
 
         // The lock screen is still showing what we just left.
         nowPlaying.stop()
-        if let metadata = current.metadata, let artwork {
-            nowPlaying.start(metadata, for: engine, artwork: artwork)
+        if let artwork {
+            startNowPlaying(artwork: artwork)
         }
 
         engine.load(current.url, startingAt: current.startTicks.map(PlaybackReporter.seconds(fromTicks:)))
@@ -373,7 +415,14 @@ final class PlaybackSession {
         if !isScrubbing {
             position = newPosition ?? engine.currentTime
         }
-        duration = engine.duration
+
+        // Sticky, because a file's length doesn't change but an engine can
+        // briefly answer "unknown" while a seek settles. Letting that through
+        // disables the scrubber under a moving thumb, which cancels the drag
+        // and is one of the ways the trailing callback goes missing.
+        if let known = engine.duration {
+            duration = known
+        }
         isPlaying = engine.isPlaying
     }
 
@@ -384,6 +433,78 @@ final class PlaybackSession {
         selectedSubtitleTrack = engine.selectedSubtitleTrack
         audioTracks = engine.audioTracks
         selectedAudioTrack = engine.selectedAudioTrack
+    }
+
+    /// Phone calls, alarms, and headphones being pulled out.
+    ///
+    /// `AVPlayer` handles most of this on its own, but mpv does not: it is a
+    /// decoder with an audio output, and it will happily keep running against a
+    /// deactivated session, so a call would cost you however long it lasted.
+    /// Both engines go through the same handling rather than one relying on
+    /// AVFoundation and the other not.
+    private func observeAudioSession() {
+        let center = NotificationCenter.default
+
+        audioObservers = [
+
+            center.addObserver(
+                forName: AVAudioSession.interruptionNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                MainActor.assumeIsolated { self?.handleInterruption(notification) }
+            },
+
+            center.addObserver(
+                forName: AVAudioSession.routeChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                MainActor.assumeIsolated { self?.handleRouteChange(notification) }
+            },
+        ]
+    }
+
+    private func handleInterruption(_ notification: Notification) {
+        guard let raw = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: raw)
+        else { return }
+
+        switch type {
+        case .began:
+            wasPlayingBeforeInterruption = engine.isPlaying
+            engine.pause()
+            refresh()
+
+        case .ended:
+            // Only when the system says so. An interruption that ended because
+            // the user switched to another player should not start two of them.
+            let raw = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let options = AVAudioSession.InterruptionOptions(rawValue: raw)
+
+            if options.contains(.shouldResume), wasPlayingBeforeInterruption {
+                try? AVAudioSession.sharedInstance().setActive(true)
+                engine.play()
+                refresh()
+            }
+            wasPlayingBeforeInterruption = false
+
+        @unknown default:
+            break
+        }
+    }
+
+    /// Headphones pulled out, or a Bluetooth device walking away. Pausing is
+    /// what every other player does, and the alternative is a phone that starts
+    /// playing out loud in a quiet room.
+    private func handleRouteChange(_ notification: Notification) {
+        guard let raw = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: raw),
+              reason == .oldDeviceUnavailable
+        else { return }
+
+        engine.pause()
+        refresh()
     }
 
     /// `.playback` keeps audio on the speaker even with the silent switch on,

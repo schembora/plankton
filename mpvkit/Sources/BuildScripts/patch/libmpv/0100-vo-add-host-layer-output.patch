@@ -1,0 +1,339 @@
+Description: Add vo=avfoundation, a video output that hands VideoToolbox
+ frames to a host supplied AVSampleBufferDisplayLayer.
+ .
+ The system only composites video it owns: Picture in Picture and the lock
+ screen's now playing surface both read from an AVSampleBufferDisplayLayer or
+ an AVPlayerLayer, and neither can be fed from a CAMetalLayer. With hwdec set
+ to videotoolbox the decoder already produces CVPixelBuffers, so this output is
+ a handoff rather than a conversion.
+ .
+ Hardware frames only, and no OSD compositing yet. Timing stays with mpv:
+ samples carry the DisplayImmediately attachment and no timestamps. Geometry
+ stays with the host, which sizes the layer and sets videoGravity.
+Author: Plankton
+Origin: other
+Forwarded: no
+Last-Update: 2026-08-10
+
+diff --git a/meson.build b/meson.build
+index fb10be5..09370dd 100644
+--- a/meson.build
++++ b/meson.build
+@@ -821,6 +821,7 @@ features += {'avfoundation': avfoundation.found()}
+ if features['avfoundation']
+     dependencies += avfoundation
+     sources += files('audio/out/ao_avfoundation.m')
++    sources += files('video/out/vo_avfoundation.m')
+ endif
+ 
+ coreaudio = dependency('appleframeworks', modules: ['CoreFoundation', 'CoreAudio',
+diff --git a/video/out/vo.c b/video/out/vo.c
+index c9cde30..ffaa03e 100644
+--- a/video/out/vo.c
++++ b/video/out/vo.c
+@@ -47,6 +47,7 @@
+ #include "osdep/threads.h"
+ 
+ extern const struct vo_driver video_out_mediacodec_embed;
++extern const struct vo_driver video_out_avfoundation;
+ extern const struct vo_driver video_out_x11;
+ extern const struct vo_driver video_out_vdpau;
+ extern const struct vo_driver video_out_xv;
+@@ -88,6 +89,9 @@ static const struct vo_driver *const video_out_drivers[] =
+ #if HAVE_ANDROID
+     &video_out_mediacodec_embed,
+ #endif
++#if HAVE_AVFOUNDATION
++    &video_out_avfoundation,
++#endif
+ #if HAVE_SDL2_VIDEO
+     &video_out_sdl,
+ #endif
+diff --git a/video/out/vo_avfoundation.m b/video/out/vo_avfoundation.m
+new file mode 100644
+index 0000000..e1e3969
+--- /dev/null
++++ b/video/out/vo_avfoundation.m
+@@ -0,0 +1,282 @@
++/*
++ * This file is part of mpv.
++ *
++ * mpv is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * mpv is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with mpv.  If not, see <http://www.gnu.org/licenses/>.
++ */
++
++/*
++ * Video output that hands VideoToolbox frames straight to an
++ * AVSampleBufferDisplayLayer supplied by the host application as --wid.
++ *
++ * The point of this over the GPU outputs on Apple platforms is that the system
++ * only composites video it owns: Picture in Picture and the lock screen's now
++ * playing surface both read from an AVSampleBufferDisplayLayer or an
++ * AVPlayerLayer, and neither can be fed from a CAMetalLayer no matter what is
++ * drawn into it. Decoded frames already are CVPixelBuffers when hwdec is
++ * videotoolbox, so this output is a handoff rather than a conversion.
++ *
++ * Presentation timing stays with mpv. Frames are enqueued for immediate
++ * display as flip_page delivers them, so mpv's own clock paces playback and
++ * the layer is never asked to schedule anything. The layer's control timebase
++ * belongs to the host, which needs it for Picture in Picture's transport UI
++ * and knows the playback state this output does not.
++ *
++ * Geometry belongs to the host too. The layer is positioned and sized by the
++ * UI framework and scales its contents according to videoGravity, so this
++ * output never sets a drawable size, and rotating the device is not something
++ * it has to notice.
++ */
++
++#include <AVFoundation/AVFoundation.h>
++#include <CoreMedia/CoreMedia.h>
++
++#include "common/common.h"
++#include "video/mp_image.h"
++#include "vo.h"
++
++struct priv {
++    AVSampleBufferDisplayLayer *layer;
++
++    // Held between draw_frame and flip_page, which is where mpv wants the
++    // frame actually shown.
++    struct mp_image *next_image;
++
++    // Describes the pixel buffers being enqueued. Cached rather than built per
++    // frame, since it only changes when the format or the size does.
++    CMVideoFormatDescriptionRef format;
++};
++
++static void release_format(struct priv *p)
++{
++    if (p->format) {
++        CFRelease(p->format);
++        p->format = NULL;
++    }
++}
++
++/// The layer stops accepting frames after a failure, and the only way back is
++/// to flush it. Without this a single transient error ends playback with the
++/// picture frozen and audio still running.
++static bool recover_if_failed(struct vo *vo)
++{
++    struct priv *p = vo->priv;
++
++    if (p->layer.status != AVQueuedSampleBufferRenderingStatusFailed)
++        return true;
++
++    MP_WARN(vo, "display layer failed: %s\n",
++            p->layer.error.localizedDescription.UTF8String ?: "unknown");
++    [p->layer flush];
++    release_format(p);
++
++    return p->layer.status != AVQueuedSampleBufferRenderingStatusFailed;
++}
++
++/// Wraps a decoded frame for the layer. The pixel buffer is retained by the
++/// sample buffer, so the image can be released as soon as this returns.
++static CMSampleBufferRef wrap_pixel_buffer(struct vo *vo, CVPixelBufferRef pixbuf)
++{
++    struct priv *p = vo->priv;
++
++    // A stream can change resolution mid-playback, and the cached description
++    // would then describe the previous size.
++    if (p->format && !CMVideoFormatDescriptionMatchesImageBuffer(p->format, pixbuf))
++        release_format(p);
++
++    if (!p->format) {
++        OSStatus status = CMVideoFormatDescriptionCreateForImageBuffer(
++            kCFAllocatorDefault, pixbuf, &p->format);
++        if (status != noErr) {
++            MP_ERR(vo, "could not describe frame: %d\n", (int)status);
++            return NULL;
++        }
++    }
++
++    // Invalid timing throughout: the sample carries no schedule because mpv
++    // has already decided this frame is due now. Giving the layer timestamps
++    // as well would have it pace against its own timebase and fight the clock
++    // that just released the frame.
++    CMSampleTimingInfo timing = {
++        .duration = kCMTimeInvalid,
++        .presentationTimeStamp = kCMTimeInvalid,
++        .decodeTimeStamp = kCMTimeInvalid,
++    };
++
++    CMSampleBufferRef sample = NULL;
++    OSStatus status = CMSampleBufferCreateReadyWithImageBuffer(
++        kCFAllocatorDefault, pixbuf, p->format, &timing, &sample);
++    if (status != noErr) {
++        MP_ERR(vo, "could not wrap frame: %d\n", (int)status);
++        return NULL;
++    }
++
++    return sample;
++}
++
++/// Says "show this now" rather than scheduling it, which is what makes mpv the
++/// clock. The attachment is on the sample rather than the layer because it
++/// describes this frame, not the stream.
++static void mark_display_immediately(CMSampleBufferRef sample)
++{
++    CFArrayRef attachments =
++        CMSampleBufferGetSampleAttachmentsArray(sample, true);
++    if (!attachments || CFArrayGetCount(attachments) == 0)
++        return;
++
++    CFMutableDictionaryRef entry =
++        (CFMutableDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
++    CFDictionarySetValue(entry, kCMSampleAttachmentKey_DisplayImmediately,
++                         kCFBooleanTrue);
++}
++
++static int preinit(struct vo *vo)
++{
++    struct priv *p = vo->priv;
++
++    int64_t wid = vo->opts->WinID;
++    if (wid == 0 || wid == -1) {
++        MP_FATAL(vo, "no --wid given; this output draws into a layer owned by "
++                     "the host application\n");
++        return -1;
++    }
++
++    // mpv is built without ARC, so this is a plain cast and the reference is
++    // ours to manage.
++    id object = (id)(intptr_t)wid;
++    if (![object isKindOfClass:[AVSampleBufferDisplayLayer class]]) {
++        MP_FATAL(vo, "--wid is not an AVSampleBufferDisplayLayer\n");
++        return -1;
++    }
++
++    // Retained even though the host is expected to outlive us. It costs
++    // nothing, and the alternative is a dangling layer if the host ever tears
++    // its view down while the player is still shutting off.
++    p->layer = [(AVSampleBufferDisplayLayer *)object retain];
++
++    return 0;
++}
++
++static int query_format(struct vo *vo, int format)
++{
++    // Hardware frames only. Anything else would have to be uploaded into a
++    // CVPixelBuffer first, and the whole reason this output exists is that
++    // VideoToolbox has already produced one.
++    return format == IMGFMT_VIDEOTOOLBOX;
++}
++
++static int reconfig(struct vo *vo, struct mp_image_params *params)
++{
++    struct priv *p = vo->priv;
++
++    // The new stream's frames describe themselves, and the cached description
++    // is from the last one.
++    release_format(p);
++
++    @autoreleasepool {
++        [p->layer flush];
++    }
++
++    return 0;
++}
++
++static bool draw_frame(struct vo *vo, struct vo_frame *frame)
++{
++    struct priv *p = vo->priv;
++
++    struct mp_image *image = NULL;
++    // A repeat or a redraw is the same picture the layer is already showing.
++    if (!frame->redraw && !frame->repeat && frame->current)
++        image = mp_image_new_ref(frame->current);
++
++    talloc_free(p->next_image);
++    p->next_image = image;
++
++    return VO_TRUE;
++}
++
++static void flip_page(struct vo *vo)
++{
++    struct priv *p = vo->priv;
++
++    if (!p->next_image)
++        return;
++
++    @autoreleasepool {
++        CVPixelBufferRef pixbuf = (CVPixelBufferRef)p->next_image->planes[3];
++
++        if (pixbuf && recover_if_failed(vo) && p->layer.readyForMoreMediaData) {
++            CMSampleBufferRef sample = wrap_pixel_buffer(vo, pixbuf);
++            if (sample) {
++                mark_display_immediately(sample);
++                [p->layer enqueueSampleBuffer:sample];
++                CFRelease(sample);
++            }
++        }
++
++        // Dropped rather than held when the layer is busy. Queueing behind it
++        // would show this frame late, and mpv has already moved on.
++        mp_image_unrefp(&p->next_image);
++    }
++}
++
++static int control(struct vo *vo, uint32_t request, void *data)
++{
++    struct priv *p = vo->priv;
++
++    switch (request) {
++    case VOCTRL_RESET:
++        // Seeking and stopping both land here. Whatever is queued belongs to
++        // the position being left behind.
++        @autoreleasepool {
++            [p->layer flush];
++        }
++        return VO_TRUE;
++    }
++
++    return VO_NOTIMPL;
++}
++
++static void uninit(struct vo *vo)
++{
++    struct priv *p = vo->priv;
++
++    @autoreleasepool {
++        // Leaves the layer empty for whoever gets it next: the host keeps it
++        // across playthroughs, and a stale last frame would show under the
++        // start of the following one.
++        [p->layer flushAndRemoveImage];
++    }
++
++    mp_image_unrefp(&p->next_image);
++    release_format(p);
++
++    [p->layer release];
++    p->layer = NULL;
++}
++
++const struct vo_driver video_out_avfoundation = {
++    .description = "AVSampleBufferDisplayLayer (host supplied)",
++    .name = "avfoundation",
++    // The layer takes ownership of what it is given, so mpv must not assume a
++    // frame stays valid after it has been handed over.
++    .caps = VO_CAP_NORETAIN,
++    .preinit = preinit,
++    .query_format = query_format,
++    .reconfig = reconfig,
++    .control = control,
++    .draw_frame = draw_frame,
++    .flip_page = flip_page,
++    .uninit = uninit,
++    .priv_size = sizeof(struct priv),
++};
