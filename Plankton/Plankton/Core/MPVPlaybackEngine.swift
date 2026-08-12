@@ -64,6 +64,10 @@ final class MPVPlaybackEngine: PlaybackEngine {
     private var hasIssuedLoad = false
     private var isFileOpen = false
 
+    /// Kept so the decoder is reported once per file rather than on every
+    /// seek, which is also a playback restart.
+    private var lastReportedDecoder: String?
+
     private enum Property {
         static let pause = "pause"
         static let coreIdle = "core-idle"
@@ -260,6 +264,7 @@ final class MPVPlaybackEngine: PlaybackEngine {
     func play() {
         if !hasIssuedLoad {
             hasIssuedLoad = true
+        lastReportedDecoder = nil
 
             // Opening at a position is mpv's job, and has to be set before the
             // file is handed over.
@@ -434,6 +439,20 @@ final class MPVPlaybackEngine: PlaybackEngine {
         }
     }
 
+    /// Whether the decoder took the hardware path, said once per file.
+    ///
+    /// Not at file load: `hwdec-current` is unavailable until the decoder
+    /// exists, and reading it there answers nothing rather than "no". Worth
+    /// stating at all because software decoding looks identical — the video
+    /// output uploads those frames and renders them correctly — and shows up
+    /// only as heat and battery.
+    private func reportDecoder() {
+        guard let current = string(Property.hwdecCurrent), current != lastReportedDecoder else { return }
+
+        lastReportedDecoder = current
+        logger.info("hwdec: \(current, privacy: .public)")
+    }
+
     private func notifyState() {
         syncTimebase()
         for handler in stateHandlers {
@@ -474,18 +493,15 @@ final class MPVPlaybackEngine: PlaybackEngine {
             Task { @MainActor in
                 self.isFileOpen = true
                 self.notifyState()
-
-                // Whether the decoder actually took the hardware path. Worth
-                // stating out loud: software decoding looks identical, because
-                // the video output uploads those frames and renders them
-                // correctly. It only shows up as heat and battery.
-                logger.info("hwdec: \(self.string(Property.hwdecCurrent) ?? "unknown", privacy: .public)")
             }
 
         // mpv's answer to AVPlayer's seek completion — the position is only
         // trustworthy once playback restarts.
         case MPV_EVENT_PROPERTY_CHANGE, MPV_EVENT_PLAYBACK_RESTART:
-            Task { @MainActor in self.notifyState() }
+            Task { @MainActor in
+                self.notifyState()
+                self.reportDecoder()
+            }
 
         case MPV_EVENT_END_FILE:
             guard let ending = UnsafePointer<mpv_event_end_file>(OpaquePointer(event.data))?.pointee,

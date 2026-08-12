@@ -13,7 +13,7 @@ Description: Composite mpv's OSD into the frame in vo=avfoundation, so
 Author: Plankton
 Origin: other
 diff --git a/video/out/vo_avfoundation.m b/video/out/vo_avfoundation.m
-index ff14766..802ea4e 100644
+index ff14766..f9fe6ae 100644
 --- a/video/out/vo_avfoundation.m
 +++ b/video/out/vo_avfoundation.m
 @@ -39,6 +39,12 @@
@@ -38,7 +38,7 @@ index ff14766..802ea4e 100644
  #include "video/mp_image.h"
  #include "vo.h"
  
-@@ -188,6 +196,128 @@ static bool ensure_pool(struct vo *vo, int w, int h, OSType fmt)
+@@ -188,6 +196,134 @@ static bool ensure_pool(struct vo *vo, int w, int h, OSType fmt)
      return true;
  }
  
@@ -48,6 +48,14 @@ index ff14766..802ea4e 100644
 +                                    int imgfmt, struct mp_image_params *params)
 +{
 +    *img = (struct mp_image){0};
++
++    // Colour first, then format and size. mp_image_setfmt writes
++    // params.imgfmt as well as imgfmt, so copying the stream's params over the
++    // top afterwards puts the frame's own format back — the hardware one for a
++    // buffer that came from the decoder. The image then claims to be NV12 in
++    // one field and VideoToolbox in another, and osd_draw_on_image reads the
++    // one that is wrong and refuses to draw.
++    img->params = *params;
 +    mp_image_setfmt(img, imgfmt);
 +    mp_image_set_size(img, (int)CVPixelBufferGetWidth(buf), (int)CVPixelBufferGetHeight(buf));
 +
@@ -56,8 +64,6 @@ index ff14766..802ea4e 100644
 +        img->planes[i] = CVPixelBufferGetBaseAddressOfPlane(buf, i);
 +        img->stride[i] = CVPixelBufferGetBytesPerRowOfPlane(buf, i);
 +    }
-+
-+    img->params = *params;
 +}
 +
 +/// The mpv format matching a CoreVideo one, for describing a buffer we are
@@ -167,7 +173,7 @@ index ff14766..802ea4e 100644
  /// Copies a software frame into a pooled buffer. Row by row, because mpv's
  /// stride and CoreVideo's are decided independently and rarely agree.
  static CVPixelBufferRef upload_image(struct vo *vo, struct mp_image *mpi)
-@@ -228,6 +358,7 @@ static CVPixelBufferRef upload_image(struct vo *vo, struct mp_image *mpi)
+@@ -228,6 +364,7 @@ static CVPixelBufferRef upload_image(struct vo *vo, struct mp_image *mpi)
      return buf;
  }
  
@@ -175,7 +181,7 @@ index ff14766..802ea4e 100644
  static void release_format(struct priv *p)
  {
      if (p->format) {
-@@ -393,11 +524,33 @@ static void flip_page(struct vo *vo)
+@@ -393,11 +530,33 @@ static void flip_page(struct vo *vo)
          struct mp_image *mpi = p->next_image;
          bool is_hw = mpi->imgfmt == IMGFMT_VIDEOTOOLBOX;
  
@@ -209,7 +215,7 @@ index ff14766..802ea4e 100644
          if (pixbuf && recover_if_failed(vo) && p->layer.readyForMoreMediaData) {
              CMSampleBufferRef sample = wrap_pixel_buffer(vo, pixbuf);
              if (sample) {
-@@ -407,6 +560,9 @@ static void flip_page(struct vo *vo)
+@@ -407,6 +566,9 @@ static void flip_page(struct vo *vo)
              }
          }
  
