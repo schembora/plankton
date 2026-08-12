@@ -388,8 +388,11 @@ private class BuildMPV: BaseBuild {
             "-Dplain-gl=enabled",
             "-Diconv=enabled",
             "-Duchardet=enabled",
-            "-Dvulkan=enabled",
-            "-Dmoltenvk=enabled",  // from patch option
+            // The GPU outputs are gone: playback goes through vo=avfoundation,
+            // which takes CVPixelBuffers and needs no GPU context. moltenvk was
+            // an option added by a patch we no longer carry, so passing it at
+            // all would now fail on an unknown option.
+            "-Dvulkan=disabled",
 
             "-Djavascript=disabled",
             "-Dzimg=disabled",
@@ -422,7 +425,11 @@ private class BuildMPV: BaseBuild {
             array.append("-Dlua=luajit")  // macos show video stats need enable 
         } else {
             array.append("-Dvideotoolbox-gl=disabled")
-            array.append("-Dvideotoolbox-pl=enabled")
+            // The GPU side of VideoToolbox, which maps decoded frames into
+            // OpenGL or Vulkan textures. Our video output takes the
+            // CVPixelBuffer directly and registers the decode device itself,
+            // so this only built code nothing reaches.
+            array.append("-Dvideotoolbox-pl=disabled")
             array.append("-Dswift-build=disabled")
             array.append("-Daudiounit=enabled")
             // Enable the avfoundation AO (AVSampleBufferAudioRenderer) on iOS/tvOS.

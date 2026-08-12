@@ -305,8 +305,8 @@ let package = Package(
             // repo, so the source of the patch and the binary it produced stay
             // together. Every other target is untouched by our patches and
             // resolves to upstream MPVKit.
-            url: "https://github.com/schembora/plankton/releases/download/libmpv-0.41.0-2/Libmpv.xcframework.zip",
-            checksum: "996572dd9e6671eedef582aa43cacfc165da8d65f59ef93e1f266993c19cc862"
+            url: "https://github.com/schembora/plankton/releases/download/libmpv-0.41.0-3/Libmpv.xcframework.zip",
+            checksum: "53e4b6c915d6216fad627f293b9c9840b9649532d81153b1c3eb8e6d730f01f4"
         ),
         //AUTO_GENERATE_TARGETS_END//
     ]

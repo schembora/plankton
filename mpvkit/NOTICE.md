@@ -23,23 +23,12 @@ from upstream cannot collide with or reorder ours.
 
 | Patch | Origin | License |
 |---|---|---|
-| `0001-player-add-moltenvk-context` | Upstream [mpvkit/MPVKit](https://github.com/mpvkit/MPVKit), plus Plankton's fix to report layer resizes to mpv | LGPLv2.1+ |
 | `0002-revert-build-static` | Upstream [mpvkit/MPVKit](https://github.com/mpvkit/MPVKit) | LGPLv2.1+ |
 | `0003-enable-avfoundation-ao-tvos` | Upstream [mpvkit/MPVKit](https://github.com/mpvkit/MPVKit) | LGPLv2.1+ |
 | `0100-vo-add-host-layer-output` | Plankton | LGPLv2.1+ |
 | `0101-vo-upload-software-frames` | Plankton | LGPLv2.1+ |
 | `0102-vo-composite-osd` | Plankton | LGPLv2.1+ |
 | `0103-vo-register-videotoolbox-hwdec` | Plankton | LGPLv2.1+ |
-
-### 0001, MoltenVK resize
-
-MPVKit's MoltenVK context never told mpv when its layer changed size, so
-rotating the device left the video laid out for the previous orientation. The
-patch derives the size from the layer's own `bounds` and `contentsScale` and
-raises `VO_EVENT_RESIZE` from `VOCTRL_CHECK_EVENTS`.
-
-Only relevant to the `gpu-next` path. If `vo=avfoundation` becomes the only
-output Plankton uses, this patch stops being load bearing.
 
 ### 0101, software frame upload
 
@@ -114,6 +103,21 @@ engine now logs `hwdec:` on file load so this cannot hide again.
 This is also what makes dropping Vulkan safe. Disabling `videotoolbox-pl`
 removes `hwdec_vt.c`, which was the only thing registering VideoToolbox at all,
 so doing that before this patch would have been fatal rather than cosmetic.
+
+## What is deliberately not built
+
+`vulkan` and `videotoolbox-pl` are disabled and the MoltenVK context patch is
+gone. Playback goes through `vo=avfoundation`, which takes `CVPixelBuffer`s,
+needs no GPU context, and registers the decode device itself, so mpv's Vulkan
+backend, its MoltenVK windowing context and the GPU side of VideoToolbox all
+built code nothing could reach. Dropping the MoltenVK patch is what retires the
+fork this directory replaced: it existed to carry that one fix.
+
+libplacebo cannot go with them, and neither can the Vulkan and shaderc
+libraries behind it. mpv 0.41 requires libplacebo unconditionally — no
+`required:` guard, in the mandatory dependency array, with the feature
+hard-coded true — and the prebuilt libplacebo is compiled against both. So this
+removes code paths rather than binary size.
 
 ## Rebuilding
 
