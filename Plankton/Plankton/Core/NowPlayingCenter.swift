@@ -151,7 +151,6 @@ final class NowPlayingCenter {
         isLive = false
         engine = nil
         infoCenter.nowPlayingInfo = nil
-        infoCenter.playbackState = .stopped
         UIApplication.shared.endReceivingRemoteControlEvents()
     }
 
@@ -176,12 +175,10 @@ final class NowPlayingCenter {
             info[MPMediaItemPropertyPlaybackDuration] = duration
         }
 
+        // `playbackState` is deliberately not set. It needs a private
+        // entitlement iOS will not grant, so every attempt is refused with a
+        // log line and nothing else. The rate above is what the system reads.
         infoCenter.nowPlayingInfo = info
-
-        // Stated separately from the rate. The system reads this to decide
-        // whether the app is the one playing, and a missing value leaves it
-        // guessing from a dictionary it has no other reason to re-read.
-        infoCenter.playbackState = engine.isPlaying ? .playing : .paused
     }
 
     /// Play/pause moves the clock the lock screen extrapolates from, and an

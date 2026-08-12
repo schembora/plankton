@@ -43,6 +43,11 @@ final class MPVPlaybackEngine: PlaybackEngine {
     /// One per `observeTime` caller — progress reporting and the on-screen
     /// controls both want a clock, at very different cadences.
     private var progressTimers: [DispatchSourceTimer] = []
+    private var lifecycleObservers: [any NSObjectProtocol] = []
+
+    /// Pending decision to stop decoding video, deferred so Picture in Picture
+    /// has time to claim it, and cancelled if the app comes back.
+    private var backgroundVideoTask: Task<Void, Never>?
 
     /// Drives Picture in Picture's transport. Held because PiP reads the
     /// position from it and there is nothing else to read.
@@ -74,6 +79,8 @@ final class MPVPlaybackEngine: PlaybackEngine {
         static let duration = "duration"
         static let timePos = "time-pos"
         static let hwdecCurrent = "hwdec-current"
+        static let hwdec = "hwdec"
+        static let videoTrack = "vid"
         static let start = "start"
         static let trackList = "track-list"
         static let subtitleTrack = "sid"
@@ -186,6 +193,67 @@ final class MPVPlaybackEngine: PlaybackEngine {
         }, Unmanaged.passUnretained(self).toOpaque())
 
         configurePictureInPicture()
+        observeAppLifecycle()
+    }
+
+    /// Keeps hardware decoding working across a trip to the background.
+    ///
+    /// iOS invalidates VideoToolbox decompression sessions when an app is
+    /// backgrounded. A decoder left running comes back with
+    /// kVTInvalidSessionErr, and mpv responds by abandoning hardware decoding
+    /// for the rest of the file, so the only symptom is the file playing on
+    /// the CPU from then on.
+    ///
+    /// Two halves, because either alone is wrong. Dropping the video track
+    /// avoids decoding frames nobody can see, but Picture in Picture is
+    /// showing them and must not lose the track. Re-asserting `hwdec` on the
+    /// way back repairs a session that was invalidated anyway, which is what
+    /// covers the case where the first half decides wrongly.
+    private func observeAppLifecycle() {
+        let center = NotificationCenter.default
+
+        lifecycleObservers = [
+            center.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.stopDecodingVideoIfUnwatched() }
+            },
+            center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.resumeDecodingVideo() }
+            },
+        ]
+    }
+
+    /// Waits before giving up on the video track. The system starts Picture in
+    /// Picture as the app leaves the foreground, so asking immediately can
+    /// catch it before it has said it is active, and dropping the track then
+    /// would take the picture out of the window as it opened.
+    private func stopDecodingVideoIfUnwatched() {
+        backgroundVideoTask?.cancel()
+        backgroundVideoTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+
+            guard !Task.isCancelled, let self,
+                  self.pictureInPicture?.isPictureInPictureActive != true
+            else { return }
+
+            self.setPropertyOffMain(Property.videoTrack, "no")
+        }
+    }
+
+    private func resumeDecodingVideo() {
+        backgroundVideoTask?.cancel()
+        backgroundVideoTask = nil
+
+        setPropertyOffMain(Property.videoTrack, "auto")
+
+        // Only when it actually fell back, so a healthy session is not torn
+        // down for nothing. Off and on again, because setting an option to the
+        // value it already holds is not a change, and mpv reinitialises the
+        // decoder on the change.
+        guard isFileOpen, string(Property.hwdecCurrent) != "videotoolbox" else { return }
+
+        logger.info("hardware decoding was lost in the background; reinitialising")
+        setPropertyOffMain(Property.hwdec, "no")
+        setPropertyOffMain(Property.hwdec, "videotoolbox")
     }
 
     /// Picture in Picture, which is the whole reason this engine renders into a
@@ -389,6 +457,14 @@ final class MPVPlaybackEngine: PlaybackEngine {
         }
         progressTimers.removeAll()
 
+        backgroundVideoTask?.cancel()
+        backgroundVideoTask = nil
+
+        for observer in lifecycleObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        lifecycleObservers.removeAll()
+
         pictureInPicture?.stopPictureInPicture()
         pictureInPicture = nil
         timebase = nil
@@ -562,6 +638,19 @@ final class MPVPlaybackEngine: PlaybackEngine {
     private func setProperty(_ name: String, _ value: String) {
         guard let handle else { return }
         check(mpv_set_property_string(handle, name, value), "set \(name)")
+    }
+
+    /// Changing the video track or the decoder makes the video output
+    /// reconfigure, and mpv's setters block until that lands. Off the main
+    /// thread so the two cannot wait on each other.
+    private func setPropertyOffMain(_ name: String, _ value: String) {
+        guard let handle else { return }
+
+        events.async {
+            let status = mpv_set_property_string(handle, name, value)
+            guard status < 0 else { return }
+            logger.error("mpv set \(name, privacy: .public): \(String(cString: mpv_error_string(status)))")
+        }
     }
 
     private func command(_ name: String, _ arguments: String...) {
