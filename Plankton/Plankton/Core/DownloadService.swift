@@ -730,11 +730,9 @@ extension DownloadService: URLSessionDownloadDelegate {
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
-        // AVAssetDownloadTask is itself a URLSessionDownloadTask, so an HLS
-        // download can arrive here too. Its bundle is already in its final
-        // place and is handled by the asset delegate; moving it would break it.
-        guard !(downloadTask is AVAssetDownloadTask) else { return }
-
+        // Only file downloads reach here. AVAssetDownloadTask descends from
+        // URLSessionTask, not from URLSessionDownloadTask, so an HLS bundle is
+        // never delivered to this callback and never needs excluding from it.
         guard let itemID = downloadTask.taskDescription,
               let index = media.firstIndex(where: { $0.itemID == itemID })
         else {

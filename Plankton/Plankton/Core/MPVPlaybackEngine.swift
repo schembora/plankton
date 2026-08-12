@@ -697,9 +697,11 @@ private final class MPVSampleBufferView: UIView {
         // Unlike the Metal path, this is a plain main-thread property on a
         // layer we own, set once. mpv never touches it, so there is no render
         // thread to race and no reason to defer it.
-        if #available(iOS 17.0, *) {
-            displayLayer.wantsExtendedDynamicRangeContent = true
-        }
+        //
+        // `constrainedHigh` rather than `high`: the video shares the screen
+        // with our own controls, and asking for the full range would have the
+        // system raise the whole display's brightness to suit it.
+        displayLayer.preferredDynamicRange = .constrainedHigh
     }
 
     @available(*, unavailable)
