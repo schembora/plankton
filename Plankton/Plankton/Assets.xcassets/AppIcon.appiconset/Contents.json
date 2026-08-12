@@ -1,31 +1,7 @@
 {
   "images" : [
     {
-      "filename" : "760654783_1397113042338029_8803415469403250953_n.png",
-      "idiom" : "universal",
-      "platform" : "ios",
-      "size" : "1024x1024"
-    },
-    {
-      "appearances" : [
-        {
-          "appearance" : "luminosity",
-          "value" : "dark"
-        }
-      ],
-      "filename" : "760654783_1397113042338029_8803415469403250953_n 1.png",
-      "idiom" : "universal",
-      "platform" : "ios",
-      "size" : "1024x1024"
-    },
-    {
-      "appearances" : [
-        {
-          "appearance" : "luminosity",
-          "value" : "tinted"
-        }
-      ],
-      "filename" : "760654783_1397113042338029_8803415469403250953_n 2.png",
+      "filename" : "plankton.png",
       "idiom" : "universal",
       "platform" : "ios",
       "size" : "1024x1024"
