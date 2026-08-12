@@ -26,9 +26,11 @@ enum ServerDiscovery {
                 continuation.finish()
             }
 
+            // Termination arrives on whatever thread finished the stream, and
+            // the socket is the main actor's to close.
             continuation.onTermination = { _ in
-                session.stop()
                 timeout.cancel()
+                Task { @MainActor in session.stop() }
             }
             session.start()
         }

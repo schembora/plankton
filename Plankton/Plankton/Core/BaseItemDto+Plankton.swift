@@ -74,7 +74,7 @@ extension BaseItemDto {
 
     /// Named the way a release is described rather than by exact pixel count —
     /// a "4K" file is rarely exactly 3840 wide once it's been cropped.
-    private static func resolutionText(_ stream: MediaStream) -> String? {
+    private nonisolated static func resolutionText(_ stream: MediaStream) -> String? {
         guard let width = stream.width else { return nil }
 
         let resolution: String? = switch width {
@@ -93,7 +93,7 @@ extension BaseItemDto {
     /// Only the distinctions worth a badge. HDR10 and HLG both read as "HDR"
     /// because nothing the viewer decides turns on which one it is, where
     /// Dolby Vision is the thing people go looking for.
-    private static func dynamicRangeText(_ stream: MediaStream) -> String? {
+    private nonisolated static func dynamicRangeText(_ stream: MediaStream) -> String? {
         switch stream.videoRangeType {
         case .dovi, .doviWithHDR10, .doviWithHLG, .doviWithSDR, .doviWithEL,
              .doviWithHDR10Plus, .doviWithELHDR10Plus:
@@ -106,7 +106,7 @@ extension BaseItemDto {
         }
     }
 
-    private static func codecText(_ codec: String) -> String? {
+    private nonisolated static func codecText(_ codec: String) -> String? {
         switch codec.lowercased() {
         case "h264", "avc": "H.264"
         case "hevc", "h265": "HEVC"
@@ -122,7 +122,7 @@ extension BaseItemDto {
 
     /// Whole megabits above ten: the figure swings shot to shot, and a decimal
     /// there would imply a precision it doesn't have.
-    private static func bitrateText(_ bitsPerSecond: Int) -> String? {
+    private nonisolated static func bitrateText(_ bitsPerSecond: Int) -> String? {
         let megabits = Double(bitsPerSecond) / 1_000_000
         guard megabits >= 0.1 else { return nil }
 

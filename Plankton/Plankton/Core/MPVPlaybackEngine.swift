@@ -11,7 +11,7 @@ import Libmpv
 import OSLog
 import UIKit
 
-private let logger = Logger(subsystem: "com.schembor.Plankton", category: "Player")
+private nonisolated let logger = Logger(subsystem: "com.schembor.Plankton", category: "Player")
 
 /// mpv draws into an `AVSampleBufferDisplayLayer` we hand it and decodes with
 /// VideoToolbox, so the server can hand over its original file untouched — no
@@ -480,8 +480,10 @@ final class MPVPlaybackEngine: PlaybackEngine {
         // for that here, it doesn't block the main thread inside a call that
         // waits on mpv's own threads to finish.
         mpv_set_wakeup_callback(handle, nil, nil)
+
+        nonisolated(unsafe) let dying = handle
         events.async {
-            mpv_terminate_destroy(handle)
+            mpv_terminate_destroy(dying)
         }
     }
 
@@ -645,9 +647,10 @@ final class MPVPlaybackEngine: PlaybackEngine {
     /// thread so the two cannot wait on each other.
     private func setPropertyOffMain(_ name: String, _ value: String) {
         guard let handle else { return }
+        nonisolated(unsafe) let target = handle
 
         events.async {
-            let status = mpv_set_property_string(handle, name, value)
+            let status = mpv_set_property_string(target, name, value)
             guard status < 0 else { return }
             logger.error("mpv set \(name, privacy: .public): \(String(cString: mpv_error_string(status)))")
         }

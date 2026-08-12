@@ -87,7 +87,8 @@ final class AVPlaybackEngine: PlaybackEngine {
         player.seek(to: target) { [weak self] _ in
             // A seek moves the clock without touching `timeControlStatus`, so
             // nothing else would tell listeners the position changed.
-            Task { @MainActor in self?.notifyState() }
+            guard let self else { return }
+            Task { @MainActor in self.notifyState() }
         }
     }
 
@@ -199,14 +200,17 @@ final class AVPlaybackEngine: PlaybackEngine {
     private func observePlayer() {
         observations = [
             player.observe(\.timeControlStatus) { [weak self] _, _ in
-                Task { @MainActor in self?.notifyState() }
+                guard let self else { return }
+                Task { @MainActor in self.notifyState() }
             },
             player.observe(\.currentItem?.duration) { [weak self] _, _ in
-                Task { @MainActor in self?.notifyState() }
+                guard let self else { return }
+                Task { @MainActor in self.notifyState() }
             },
             player.observe(\.currentItem?.status, options: [.new]) { [weak self] player, _ in
-                guard player.currentItem?.status == .failed else { return }
-                Task { @MainActor in self?.reportFailure(of: player.currentItem) }
+                guard let self, player.currentItem?.status == .failed else { return }
+                let item = player.currentItem
+                Task { @MainActor in self.reportFailure(of: item) }
             },
         ]
     }

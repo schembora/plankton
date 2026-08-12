@@ -29,8 +29,8 @@ Live TV always plays directly: it's an unbounded MPEG-TS stream, and AVPlayer pl
 
 ## Requirements
 
-- Xcode 26.3 or later
-- An iOS 26.3+ device or simulator
+- Xcode 26 or later
+- An iOS 26 device or simulator
 - A [Jellyfin](https://jellyfin.org) server (10.9+)
 
 ## Building
